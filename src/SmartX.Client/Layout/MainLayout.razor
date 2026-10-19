@@ -1,0 +1,124 @@
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject AppState State
+@inject NavigationManager Navigation
+
+<div class="shell">
+    <header class="topbar">
+        <a class="brand" href="">
+            <span class="brand-mark" aria-hidden="true">◉</span>
+            <span>Smart-X <small>Real-Time Gateway</small></span>
+        </a>
+
+        <nav class="nav" aria-label="Modules">
+            <NavLink href="" Match="NavLinkMatch.All">Home</NavLink>
+
+            <div class="nav-group" role="group" aria-label="Sensor Data Ingestion and Telemetry">
+                <span class="nav-group-label">Telemetry</span>
+                <NavLink href="telemetry" Match="NavLinkMatch.All">
+                    Pulse Grid
+                    @if (State.OpenIncidents > 0)
+                    {
+                        <span class="nav-badge warn" title="Open incidents">@State.OpenIncidents</span>
+                    }
+                </NavLink>
+                <NavLink href="telemetry/devices" Match="NavLinkMatch.Prefix">Devices</NavLink>
+                <NavLink href="telemetry/power" Match="NavLinkMatch.All">Power</NavLink>
+                <NavLink href="telemetry/topology" Match="NavLinkMatch.All">Topology</NavLink>
+                <NavLink href="telemetry/diagnostics" Match="NavLinkMatch.All">Diagnostics</NavLink>
+            </div>
+
+            <div class="nav-group" role="group" aria-label="Real-Time Command Stream and History">
+                <span class="nav-group-label">Commands</span>
+                <NavLink href="commands" Match="NavLinkMatch.Prefix">
+                    Command Stream
+                    @if (State.CriticalAlertCount > 0)
+                    {
+                        <span class="nav-badge crit" title="Critical alerts">@State.CriticalAlertCount</span>
+                    }
+                    else if (State.ActiveAlertCount > 0)
+                    {
+                        <span class="nav-badge" title="Active alerts">@State.ActiveAlertCount</span>
+                    }
+                </NavLink>
+            </div>
+
+            <div class="nav-group" role="group" aria-label="Network Topology and Mesh Routing">
+                <span class="nav-group-label">Mesh</span>
+                <NavLink href="mesh" Match="NavLinkMatch.All" class="nav-soon" title="To be implemented in the final PoE">Mesh Routing 🔒</NavLink>
+            </div>
+        </nav>
+
+        <ConnectionBadge State="State.Connection" LastBatchUtc="State.LastPulseUtc" />
+    </header>
+
+    @if (State.Toasts.Count > 0)
+    {
+        <div class="toasts" role="status" aria-live="assertive">
+            @foreach (AlertDto toast in State.Toasts)
+            {
+                <div class="@("toast sev-" + toast.Severity.ToString().ToLowerInvariant())">
+                    <div>
+                        <strong>@(toast.Severity == AlertSeverity.Critical ? "⚠ Critical" : "Alert") · @toast.Type</strong>
+                        <div class="small">@toast.Message</div>
+                    </div>
+                    <div class="toast-actions">
+                        <a class="btn tiny" href="commands" @onclick="() => State.DismissToast(toast)">Open</a>
+                        <button class="btn tiny ghost" @onclick="() => State.DismissToast(toast)" aria-label="Dismiss">✕</button>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+
+    <main class="content">
+        @if (State.StartupError is not null)
+        {
+            <div class="alert error">@State.StartupError <button class="btn tiny" @onclick="RetryAsync">Retry</button></div>
+        }
+
+        <ErrorBoundary @ref="errorBoundary">
+            <ChildContent>
+                @Body
+            </ChildContent>
+            <ErrorContent Context="exception">
+                <div class="alert error">
+                    <strong>This view hit an error and was isolated so the rest of the app keeps running.</strong>
+                    <div class="small">@exception.Message</div>
+                    <button class="btn tiny" @onclick="Recover">Reload this view</button>
+                </div>
+            </ErrorContent>
+        </ErrorBoundary>
+    </main>
+
+    <footer class="footer">Smart-X PoE · Part 2 · .NET 10 · Blazor WebAssembly + ASP.NET Core Minimal API + SignalR</footer>
+</div>
+
+@code {
+    private ErrorBoundary? errorBoundary;
+
+    protected override async Task OnInitializedAsync()
+    {
+        State.Changed += OnStateChanged;
+        Navigation.LocationChanged += OnLocationChanged;
+        await State.EnsureStartedAsync();
+    }
+
+    private void OnStateChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+    {
+        // A page that failed should not stay broken after the user moves to another module.
+        errorBoundary?.Recover();
+    }
+
+    private void Recover() => errorBoundary?.Recover();
+
+    private Task RetryAsync() => State.LoadSnapshotsAsync();
+
+    public void Dispose()
+    {
+        State.Changed -= OnStateChanged;
+        Navigation.LocationChanged -= OnLocationChanged;
+    }
+}

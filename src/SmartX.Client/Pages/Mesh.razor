@@ -1,0 +1,17 @@
+@page "/mesh"
+
+<PageTitle>Mesh Routing · Smart-X</PageTitle>
+
+<section class="panel placeholder">
+    <h1>Network Topology &amp; Mesh Routing</h1>
+    <p class="muted">This pillar is scheduled for the final PoE. The route already exists so navigation never breaks.</p>
+    <ul>
+        <li>The Facility → Zone → Sub-Zone → Node tree it will build on is live on the <a href="telemetry/topology">Topology</a> page.</li>
+        <li>Disconnected-node tracking it will use for re-routing is live on the <a href="commands">Command Stream</a>.</li>
+    </ul>
+    <p class="small muted">@State.Tiles.Count devices and @State.Groups.Length Sub-Zones are already known to the dashboard.</p>
+</section>
+
+@code {
+    [Inject] private AppState State { get; set; } = default!;
+}
