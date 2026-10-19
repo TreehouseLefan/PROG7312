@@ -1,0 +1,145 @@
+@inherits LiveComponent
+
+<section class="panel lanes">
+    <div class="panel-head">
+        <h2>Ingestion lanes</h2>
+        <span class="muted small">Every reading is validated, then routed: critical → <code>PriorityQueue</code> heap, everything else → <code>Queue&lt;T&gt;</code> FIFO. One dispatcher always serves the priority lane first.</span>
+    </div>
+
+    <div class="lane-grid">
+        <div class="lane lane-standard">
+            <div class="lane-title">Standard lane · <code>Queue&lt;T&gt;</code> (FIFO)</div>
+            <div class="lane-depth">@(Q?.StandardDepth.ToString("N0") ?? "0") <small>waiting</small></div>
+            <div class="meter" title="Queue fill level"><div class="meter-fill" style="@Fill(Q?.StandardDepth ?? 0, Q?.StandardCapacity ?? 1)"></div></div>
+            <div class="lane-stats">
+                <span>processed <strong>@(Q?.StandardProcessed.ToString("N0") ?? "0")</strong></span>
+                <span>avg wait <strong>@Ms(Q?.StandardAvgWaitMs)</strong></span>
+                <span>p95 <strong>@Ms(Q?.StandardP95WaitMs)</strong></span>
+                <span>shed <strong>@(Q?.Shed.ToString("N0") ?? "0")</strong></span>
+            </div>
+        </div>
+
+        <div class="lane lane-priority">
+            <div class="lane-title">Priority lane · <code>PriorityQueue&lt;T, severity&gt;</code></div>
+            <div class="lane-depth">@(Q?.PriorityDepth.ToString("N0") ?? "0") <small>waiting</small></div>
+            <div class="lane-note small">Severe power spikes (≥ 4 kW) and critical moisture drops (&lt; 20%) skip the queue.</div>
+            <div class="lane-stats">
+                <span>processed <strong>@(Q?.PriorityProcessed.ToString("N0") ?? "0")</strong></span>
+                <span>avg wait <strong>@Ms(Q?.PriorityAvgWaitMs)</strong></span>
+                <span>p95 <strong>@Ms(Q?.PriorityP95WaitMs)</strong></span>
+            </div>
+        </div>
+
+        <div class="lane lane-controls">
+            <div class="lane-title">Throughput <strong>@(Q?.ProcessedPerSecond.ToString("0.0") ?? "0")</strong> packets/s @(Q?.Paused == true ? "· ⏸ paused" : "")</div>
+            <div class="button-row">
+                @if (Q?.Paused == true)
+                {
+                    <button class="btn primary" @onclick="() => SetPausedAsync(false)" disabled="@busy">▶ Resume dispatcher</button>
+                }
+                else
+                {
+                    <button class="btn" @onclick="() => SetPausedAsync(true)" disabled="@busy" title="Packets keep arriving and pile up in the lanes">⏸ Pause dispatcher</button>
+                }
+            </div>
+            <div class="button-row">
+                <input type="number" class="narrow" @bind="burstCount" min="10" max="40000" aria-label="Standard packets in the burst" />
+                <button class="btn" @onclick="RunBurstAsync" disabled="@busy">Burst test</button>
+            </div>
+            <div class="button-row">
+                <button class="btn danger" @onclick="@(() => SimulateAsync("moisture"))" disabled="@busy">Simulate critical moisture</button>
+                <button class="btn danger" @onclick="@(() => SimulateAsync("power"))" disabled="@busy">Simulate power spike</button>
+                <button class="btn ghost" @onclick="DryOutAsync" disabled="@busy" title="Sub-Zone B dries out fast; a real critical alert follows in ~30 s">Dry out Sub-Zone B</button>
+            </div>
+        </div>
+    </div>
+
+    @if (State.CommandUi.LastBurst is BurstReportDto burst)
+    {
+        <div class="alert @(burst.CriticalProcessedPosition == 1 ? "ok" : "info")">
+            <strong>@(burst.CriticalProcessedPosition == 1 ? "✓ Priority bypass proven" : "Burst finished"):</strong> @burst.Summary
+        </div>
+    }
+
+    @if (message is not null)
+    {
+        <div class="@(messageOk ? "alert info" : "alert error")">@message</div>
+    }
+</section>
+
+@code {
+    private int burstCount = 5000;
+    private bool busy;
+    private string? message;
+    private bool messageOk;
+
+    private QueueStatsDto? Q => State.Queue;
+
+    private static string Fill(int depth, int capacity)
+    {
+        double percent = capacity <= 0 ? 0 : Math.Clamp(depth * 100.0 / capacity, depth > 0 ? 1 : 0, 100);
+        return "width:" + percent.ToString("0.#", CultureInfo.InvariantCulture) + "%";
+    }
+
+    private static string Ms(double? value) => value is double v ? v.ToString(v < 10 ? "0.###" : "0.#", CultureInfo.InvariantCulture) + " ms" : "–";
+
+    private async Task SetPausedAsync(bool paused)
+    {
+        busy = true;
+        ApiResult<QueueStatsDto> result = await Api.SetQueuePausedAsync(paused);
+        busy = false;
+        Show(result.Success, result.Success
+            ? (paused ? "Dispatcher paused: watch both lanes fill up. Critical readings will still be first out when you resume." : "Dispatcher resumed.")
+            : result.Error);
+    }
+
+    private async Task RunBurstAsync()
+    {
+        busy = true;
+        message = null;
+        ApiResult<BurstReportDto> result = await Api.RunBurstAsync(burstCount);
+        busy = false;
+
+        if (result.Success && result.Value is not null)
+        {
+            State.CommandUi.LastBurst = result.Value;
+            State.NotifyChanged();
+        }
+        else
+        {
+            Show(false, result.Error);
+        }
+    }
+
+    private async Task SimulateAsync(string kind)
+    {
+        busy = true;
+        ApiResult<TelemetryIngestResult> result = await Api.SimulateCriticalAlertAsync(kind);
+        busy = false;
+
+        if (result.Success && result.Value is TelemetryIngestResult r)
+        {
+            Show(true, $"Sent {r.Value:0.##} for {r.DeviceMac} → {r.Lane} lane (sequence #{r.Sequence}). {r.PriorityReason}");
+        }
+        else
+        {
+            Show(false, $"{result.Error} {string.Join(" ", result.Details)}");
+        }
+    }
+
+    private async Task DryOutAsync()
+    {
+        busy = true;
+        ApiResult<SimulatorStatusDto> result = await Api.TriggerDryOutAsync("sz-b");
+        busy = false;
+        Show(result.Success, result.Success
+            ? "Sub-Zone B is drying out. Within ~30 s its moisture sensors cross 20%, alerts fire and the engine suggests a fix."
+            : result.Error);
+    }
+
+    private void Show(bool ok, string? text)
+    {
+        messageOk = ok;
+        message = text;
+    }
+}

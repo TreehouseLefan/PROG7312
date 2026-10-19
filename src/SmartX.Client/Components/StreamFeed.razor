@@ -1,0 +1,59 @@
+@inherits LiveComponent
+
+<section class="panel feed">
+    <div class="panel-head">
+        <h2>Live telemetry stream</h2>
+        <div class="feed-controls">
+            <label class="check small"><input type="checkbox" @bind="State.CommandUi.PriorityOnly" /> <span>Priority lane only</span></label>
+            <button class="btn tiny ghost" @onclick="ToggleFreeze">@(State.CommandUi.FeedFrozen ? "▶ Resume feed" : "⏸ Freeze feed")</button>
+        </div>
+    </div>
+    <p class="tiny-text muted">Packets appear the moment the dispatcher processes them. "Wait" is the time each one spent in its queue.</p>
+
+    <div class="table-wrap feed-table">
+        <table class="table compact">
+            <thead>
+                <tr><th>#</th><th>Time</th><th>Device</th><th>Value</th><th>Lane</th><th>Wait</th></tr>
+            </thead>
+            <tbody>
+                @foreach (StreamPacketDto packet in Rows())
+                {
+                    <tr class="@(packet.Lane == IngestLane.Priority ? "row-priority" : "")" title="@(packet.PriorityReason ?? packet.Mac)">
+                        <td class="muted">@packet.Sequence</td>
+                        <td>@packet.Timestamp.ToLocalTime().ToString("HH:mm:ss")</td>
+                        <td>@packet.Name</td>
+                        <td>@ValueText(packet)</td>
+                        <td>
+                            @if (packet.Lane == IngestLane.Priority)
+                            {
+                                <span class="lane-tag priority">PRIORITY</span>
+                            }
+                            else
+                            {
+                                <span class="lane-tag">FIFO</span>
+                            }
+                        </td>
+                        <td>@packet.WaitMs.ToString("0.###") ms</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</section>
+
+@code {
+    private IEnumerable<StreamPacketDto> Rows() =>
+        (State.CommandUi.PriorityOnly ? State.Feed.Where(p => p.Lane == IngestLane.Priority) : State.Feed).Take(40);
+
+    private void ToggleFreeze()
+    {
+        State.CommandUi.FeedFrozen = !State.CommandUi.FeedFrozen;
+        State.NotifyChanged();
+    }
+
+    private static string ValueText(StreamPacketDto packet) => packet.Kind switch
+    {
+        "bool" => packet.Value >= 0.5 ? "ON" : "OFF",
+        _ => packet.Value.ToString("0.##", CultureInfo.InvariantCulture) + packet.Unit
+    };
+}
