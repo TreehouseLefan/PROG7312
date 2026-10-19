@@ -1,0 +1,56 @@
+@inherits LiveComponent
+
+<section class="panel alerts-board">
+    <div class="panel-head">
+        <h2>Active alerts</h2>
+        <span class="muted small">Unique per device and type: <code>HashSet&lt;AlertKey&gt;</code></span>
+    </div>
+
+    <div class="counter-row">
+        <div class="counter"><span class="counter-value">@(Board?.Active.Length ?? 0)</span><span class="counter-label">active</span></div>
+        <div class="counter"><span class="counter-value">@(Board?.Raised.ToString("N0") ?? "0")</span><span class="counter-label">raised</span></div>
+        <div class="counter good" title="Repeat reports of an alert that was already active, absorbed by the HashSets instead of shown again">
+            <span class="counter-value">@(Board?.DuplicatesSuppressed.ToString("N0") ?? "0")</span><span class="counter-label">duplicates suppressed</span>
+        </div>
+        <div class="counter"><span class="counter-value">@(Board?.Cleared.ToString("N0") ?? "0")</span><span class="counter-label">cleared</span></div>
+    </div>
+
+    <h3>Disconnected nodes <span class="muted small">(<code>HashSet&lt;MacKey&gt;</code>: @(Board?.DisconnectedMacs.Length ?? 0))</span></h3>
+    @if (Board is null || Board.DisconnectedMacs.Length == 0)
+    {
+        <p class="muted small">Every node is reporting.</p>
+    }
+    else
+    {
+        <div class="chips">
+            @foreach (string mac in Board.DisconnectedMacs)
+            {
+                <button class="chip offline-chip" @onclick="() => OnSelectDevice.InvokeAsync(mac)">✕ @NameOf(mac)</button>
+            }
+        </div>
+    }
+
+    @if (Board is not null && Board.Active.Length > 0)
+    {
+        <ul class="alert-list">
+            @foreach (AlertDto alert in Board.Active.Take(12))
+            {
+                <li class="@("alert-row sev-" + alert.Severity.ToString().ToLowerInvariant())" @onclick="() => OnSelectDevice.InvokeAsync(alert.Mac)">
+                    <span class="sev">@alert.Severity</span>
+                    <span class="alert-text">
+                        <strong>@alert.Type</strong> · @alert.Message
+                        <span class="muted tiny-text">since @alert.RaisedAt.ToLocalTime().ToString("HH:mm:ss") · @alert.DuplicatesSuppressed duplicate(s) absorbed</span>
+                    </span>
+                </li>
+            }
+        </ul>
+    }
+</section>
+
+@code {
+    [Parameter] public EventCallback<string> OnSelectDevice { get; set; }
+
+    private AlertBoardDto? Board => State.Alerts;
+
+    private string NameOf(string mac) => State.Tiles.TryGetValue(mac, out PulseTileDto? tile) ? tile.Name : mac;
+}

@@ -1,0 +1,52 @@
+@inherits LiveComponent
+
+<section class="panel history">
+    <div class="panel-head">
+        <h2>History</h2>
+        <select value="@FilterValue" @onchange="OnFilterChanged" aria-label="Event type">
+            <option value="">All events</option>
+            @foreach (HistoryKind kind in Enum.GetValues<HistoryKind>())
+            {
+                <option value="@kind">@kind</option>
+            }
+        </select>
+    </div>
+    <p class="tiny-text muted">Stored in time order in a <code>SortedDictionary</code> (commands, undo, alerts, searches, suggestions).</p>
+
+    @if (Events.Count == 0)
+    {
+        <p class="muted small">No events yet.</p>
+    }
+    else
+    {
+        <ul class="history-list">
+            @foreach (HistoryEventDto item in Events)
+            {
+                <li class="@("kind-" + item.Kind.ToString().ToLowerInvariant())">
+                    <span class="history-time">@item.At.ToLocalTime().ToString("HH:mm:ss")</span>
+                    <span class="history-kind">@item.Kind</span>
+                    <span>
+                        <strong>@item.Title</strong>
+                        <span class="muted small">@item.Detail</span>
+                    </span>
+                </li>
+            }
+        </ul>
+    }
+</section>
+
+@code {
+    private string FilterValue => State.CommandUi.HistoryFilter?.ToString() ?? string.Empty;
+
+    private List<HistoryEventDto> Events =>
+        State.History
+            .Where(e => State.CommandUi.HistoryFilter is null || e.Kind == State.CommandUi.HistoryFilter)
+            .Take(30)
+            .ToList();
+
+    private void OnFilterChanged(ChangeEventArgs e)
+    {
+        State.CommandUi.HistoryFilter = Enum.TryParse(e.Value?.ToString(), out HistoryKind kind) ? (HistoryKind?)kind : null;
+        State.NotifyChanged();
+    }
+}

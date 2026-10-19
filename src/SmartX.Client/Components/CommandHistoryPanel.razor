@@ -1,0 +1,143 @@
+@inherits LiveComponent
+
+<section class="panel commands">
+    <div class="panel-head">
+        <h2>Command history</h2>
+        <span class="muted small">Undo uses a <code>Stack&lt;T&gt;</code>: the last command issued is the first reverted.</span>
+    </div>
+
+    <div class="button-row">
+        <button class="btn primary" @onclick="UndoAsync" disabled="@(busy || UndoStack.Length == 0)" title="@(UndoStack.Length > 0 ? "Revert: " + UndoStack[0].Label : "Nothing to undo")">
+            ↶ Undo @(UndoStack.Length > 0 ? "“" + Short(UndoStack[0].Label) + "”" : "")
+        </button>
+        <button class="btn" @onclick="RedoAsync" disabled="@(busy || RedoStack.Length == 0)">↷ Redo</button>
+    </div>
+
+    <div class="bulk">
+        <span class="small">Bulk override:</span>
+        <select @bind="State.CommandUi.BulkScope" aria-label="Valve scope">
+            <option value="sz-c">Sub-Zone C (manifold)</option>
+            <option value="">All Sub-Zones</option>
+        </select>
+        <button class="btn danger tiny" @onclick="() => BulkAsync(CommandAction.CloseAllValves)" disabled="@busy">Close all valves</button>
+        <button class="btn tiny" @onclick="() => BulkAsync(CommandAction.OpenAllValves)" disabled="@busy">Open all valves</button>
+    </div>
+
+    @if (message is not null)
+    {
+        <div class="@(messageOk ? "alert info" : "alert error")">@message</div>
+    }
+
+    <div class="stacks">
+        <div>
+            <h3>Undo stack <span class="muted small">(@UndoStack.Length / @(State.Commands?.Capacity ?? 50))</span></h3>
+            @if (UndoStack.Length == 0)
+            {
+                <p class="muted small">Empty. Issue a command to push it here.</p>
+            }
+            else
+            {
+                <ol class="stack">
+                    @for (int i = 0; i < Math.Min(UndoStack.Length, 8); i++)
+                    {
+                        CommandRecordDto record = UndoStack[i];
+                        <li class="@(i == 0 ? "stack-top" : "")">
+                            <span>@record.Label</span>
+                            @if (i == 0)
+                            {
+                                <span class="tag">top</span>
+                            }
+                        </li>
+                    }
+                </ol>
+            }
+        </div>
+        <div>
+            <h3>Redo stack <span class="muted small">(@RedoStack.Length)</span></h3>
+            @if (RedoStack.Length == 0)
+            {
+                <p class="muted small">Undone commands land here until a new command clears them.</p>
+            }
+            else
+            {
+                <ol class="stack">
+                    @foreach (CommandRecordDto record in RedoStack.Take(5))
+                    {
+                        <li>@record.Label</li>
+                    }
+                </ol>
+            }
+        </div>
+    </div>
+
+    <h3>Recent commands</h3>
+    @if (Recent.Length == 0)
+    {
+        <p class="muted small">No commands sent yet.</p>
+    }
+    else
+    {
+        <ul class="command-log">
+            @foreach (CommandRecordDto record in Recent.Take(10))
+            {
+                <li>
+                    <span class="@("status status-" + record.Status.ToLowerInvariant())">@record.Status</span>
+                    <span class="command-label">@record.Label</span>
+                    <span class="muted tiny-text">
+                        @record.IssuedAt.ToLocalTime().ToString("HH:mm:ss") · @record.Source · @record.IssuedBy
+                        @if (record.ConfirmLatencyMs is double latency)
+                        {
+                            <text> · device confirmed in @latency.ToString("N0") ms</text>
+                        }
+                    </span>
+                </li>
+            }
+        </ul>
+    }
+</section>
+
+@code {
+    private bool busy;
+    private string? message;
+    private bool messageOk;
+
+    private CommandRecordDto[] UndoStack => State.Commands?.UndoStack ?? Array.Empty<CommandRecordDto>();
+    private CommandRecordDto[] RedoStack => State.Commands?.RedoStack ?? Array.Empty<CommandRecordDto>();
+    private CommandRecordDto[] Recent => State.Commands?.Recent ?? Array.Empty<CommandRecordDto>();
+
+    private static string Short(string label) => label.Length > 34 ? label[..34] + "…" : label;
+
+    private async Task UndoAsync() => await RunAsync(() => Api.UndoAsync(State.OperatorName));
+
+    private async Task RedoAsync() => await RunAsync(() => Api.RedoAsync(State.OperatorName));
+
+    private async Task BulkAsync(CommandAction action)
+    {
+        string? scope = string.IsNullOrWhiteSpace(State.CommandUi.BulkScope) ? null : State.CommandUi.BulkScope;
+        await RunAsync(() => Api.IssueCommandAsync(new IssueCommandRequest(action, null, scope, State.OperatorName, null)));
+    }
+
+    private async Task RunAsync(Func<Task<ApiResult<CommandResultDto>>> call)
+    {
+        busy = true;
+        try
+        {
+            ApiResult<CommandResultDto> result = await call();
+            if (result.Success && result.Value is CommandResultDto done)
+            {
+                State.ApplyCommandResult(done);
+                messageOk = true;
+                message = done.Message;
+            }
+            else
+            {
+                messageOk = false;
+                message = result.Error;
+            }
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+}
