@@ -1,0 +1,234 @@
+# Smart-X API requests
+# Works with the VS Code "REST Client" extension, JetBrains Rider / IntelliJ HTTP client, or Visual Studio.
+@api = http://localhost:5100
+
+### Health
+GET {{api}}/api/health
+
+### Landing-page pillars
+GET {{api}}/api/pillars
+
+### Deployment locations (Facility › Zone › Sub-Zone)
+GET {{api}}/api/topology/locations
+
+### Register a new environmental sensor in Sub-Zone B
+POST {{api}}/api/devices
+Content-Type: application/json
+
+{
+  "macAddress": "24:0A:C4:BE:EF:01",
+  "displayName": "B-09 Soil Moisture",
+  "category": "Environmental",
+  "subZoneId": "sz-b",
+  "room": "Bed 9",
+  "metric": "soil_moisture",
+  "unit": "%",
+  "expectedIntervalSeconds": 2,
+  "minValue": 0,
+  "maxValue": 100,
+  "simulateTelemetry": false
+}
+
+### Registration REJECTED by recursive placement check (Zone 1 requires <= 10 s)
+POST {{api}}/api/devices
+Content-Type: application/json
+
+{
+  "macAddress": "24:0A:C4:BE:EF:02",
+  "displayName": "B-10 Slow Sensor",
+  "category": "Environmental",
+  "subZoneId": "sz-b",
+  "metric": "soil_moisture",
+  "unit": "%",
+  "expectedIntervalSeconds": 30,
+  "minValue": 0,
+  "maxValue": 100
+}
+
+### Push a float reading (TelemetryPacket<float>)
+POST {{api}}/api/telemetry
+Content-Type: application/json
+
+{
+  "deviceMac": "24:0A:C4:BE:EF:01",
+  "payloadType": "float",
+  "value": 41.7
+}
+
+### REJECTED: out of plausible range
+POST {{api}}/api/telemetry
+Content-Type: application/json
+
+{
+  "deviceMac": "24:0A:C4:BE:EF:01",
+  "payloadType": "float",
+  "value": 250
+}
+
+### REJECTED: wrong payload type for the device
+POST {{api}}/api/telemetry
+Content-Type: application/json
+
+{
+  "deviceMac": "24:0A:C4:BE:EF:01",
+  "payloadType": "bool",
+  "value": true
+}
+
+### Historical upload as a jagged array (batches of different lengths)
+POST {{api}}/api/telemetry/batch
+Content-Type: application/json
+
+{
+  "deviceMac": "24:0A:C4:BE:EF:01",
+  "payloadType": "float",
+  "intervalSeconds": 2,
+  "batches": [
+    [40.1, 40.3, 40.2],
+    [40.6],
+    [41.0, 41.2, 41.1, 40.9]
+  ]
+}
+
+### Upload a hardware log (multipart)
+POST {{api}}/api/devices/240AC4BEEF01/attachments
+Content-Type: multipart/form-data; boundary=SmartXBoundary
+
+--SmartXBoundary
+Content-Disposition: form-data; name="kind"
+
+HardwareLog
+--SmartXBoundary
+Content-Disposition: form-data; name="file"; filename="boot.log"
+Content-Type: text/plain
+
+[00:00:01] ESP32 boot OK
+[00:00:02] Wi-Fi connected
+--SmartXBoundary--
+
+### Pulse Grid snapshot
+GET {{api}}/api/pulse/snapshot
+
+### Open incidents
+GET {{api}}/api/incidents?openOnly=true
+
+### Aggregate two meters (operator overloading)
+GET {{api}}/api/meters/aggregate?ids=24:0A:C4:0C:00:10&ids=24:0A:C4:0C:00:11&tolerance=100
+
+### Validate the live topology (recursion)
+GET {{api}}/api/topology/validate
+
+### Validate the deliberately broken sample
+GET {{api}}/api/topology/samples/invalid
+
+### Placement chain for a node
+GET {{api}}/api/topology/nodes/sz-b/placement
+
+### History matrix (multi-dimensional array)
+GET {{api}}/api/zones/sz-a/history-matrix?slots=12
+
+### Boxing vs generics evidence
+GET {{api}}/api/diagnostics/boxing?count=200000
+
+### Jagged batch demo
+POST {{api}}/api/diagnostics/batch-demo?devices=50&batches=20&readings=120
+
+### Simulate a gateway outage in Sub-Zone B
+POST {{api}}/api/simulator/outage/sz-b?seconds=30
+
+### Simulator status
+GET {{api}}/api/simulator/status
+
+###############################################################################
+# PART 2: Real-Time Command Stream
+###############################################################################
+
+### Simulate a HIGH-PRIORITY alert: critical moisture drop (< 20 %) on a soil sensor.
+# Replace the MAC with any Sub-Zone B soil sensor from GET {{api}}/api/stream/devices?query=b-01
+POST {{api}}/api/telemetry
+Content-Type: application/json
+
+{
+  "deviceMac": "24:0A:C4:0B:00:08",
+  "payloadType": "float",
+  "value": 12.5
+}
+
+### Same thing through the helper endpoint (picks a Sub-Zone B sensor for you)
+POST {{api}}/api/alerts/simulate?kind=moisture
+
+### Severe power spike (>= 4 kW) on a Sub-Zone C meter -> priority lane
+POST {{api}}/api/alerts/simulate?kind=power
+
+### Prove the bypass: 5,000 standard packets, then 1 critical packet
+POST {{api}}/api/stream/burst?count=5000
+
+### Queue statistics (both lanes)
+GET {{api}}/api/stream/queue
+
+### Pause / resume the dispatcher (watch the lanes fill up)
+POST {{api}}/api/stream/queue/pause
+
+###
+POST {{api}}/api/stream/queue/resume
+
+### Last processed packets (lane + wait time)
+GET {{api}}/api/stream/recent?max=20
+
+### O(1) lookup: exact MAC in any format
+GET {{api}}/api/stream/devices?query=240ac40b0008
+
+### Inverted-index search + filters (record=true teaches the engine)
+GET {{api}}/api/stream/devices?query=pump%20a&record=true
+
+###
+GET {{api}}/api/stream/devices?category=Actuator
+
+###
+GET {{api}}/api/stream/devices?state=Offline
+
+###
+GET {{api}}/api/stream/devices?alertsOnly=true
+
+### Timeline from the SortedDictionary
+GET {{api}}/api/devices/240ac40b0008/timeline?minutes=15&maxPoints=120
+
+### Dictionary vs List benchmark + hash collisions
+GET {{api}}/api/diagnostics/lookup?devices=20000&lookups=5000
+
+### Active alerts, disconnected HashSet, duplicates suppressed
+GET {{api}}/api/alerts
+
+### Device shadows (what devices poll)
+GET {{api}}/api/commands/shadows
+
+### Bulk override: close every valve in Sub-Zone C
+POST {{api}}/api/commands
+Content-Type: application/json
+
+{
+  "action": "CloseAllValves",
+  "subZoneId": "sz-c",
+  "issuedBy": "rest-client"
+}
+
+### Undo the last command (Stack<T> pop)
+POST {{api}}/api/commands/undo?issuedBy=rest-client
+
+### Redo
+POST {{api}}/api/commands/redo?issuedBy=rest-client
+
+### Command history (undo + redo stacks)
+GET {{api}}/api/commands/history
+
+### Start the dry-out scenario for Sub-Zone B
+POST {{api}}/api/simulator/dryout/sz-b
+
+### Suggested actions + automated insights
+GET {{api}}/api/engine
+
+### What the engine has learned
+GET {{api}}/api/engine/rules?top=15
+
+### Global history (SortedDictionary), newest first
+GET {{api}}/api/history?minutes=60
