@@ -1,0 +1,235 @@
+@page "/telemetry"
+@inherits LiveComponent
+@inject NavigationManager Navigation
+
+<PageTitle>Pulse Grid · Smart-X</PageTitle>
+
+<div class="page-head">
+    <div>
+        <h1>Sensor Pulse Grid</h1>
+        <p class="muted">
+            Every device is a tile, grouped Facility → Zone → Sub-Zone. Colour, glyph and opacity always change together,
+            so state never relies on colour alone. Click a tile to drill down.
+        </p>
+    </div>
+    <ConnectionBadge State="State.Connection" LastBatchUtc="State.LastPulseUtc" />
+</div>
+
+<div class="stat-strip">
+    <div class="stat"><span class="stat-value">@State.Tiles.Count</span><span class="stat-label">devices</span></div>
+    <div class="stat"><span class="stat-value">@(State.IngestStats?.Accepted.ToString("N0") ?? "–")</span><span class="stat-label">readings accepted</span></div>
+    <div class="stat"><span class="stat-value">@(State.IngestStats?.AcceptedPerSecond.ToString("0.0") ?? "–")</span><span class="stat-label">readings / s</span></div>
+    <div class="stat"><span class="stat-value">@(State.IngestStats?.Rejected.ToString("N0") ?? "–")</span><span class="stat-label">rejected by gateway</span></div>
+    <div class="stat @(State.OpenIncidents > 0 ? "warn" : "")"><span class="stat-value">@State.OpenIncidents</span><span class="stat-label">open incidents</span></div>
+    <div class="stat"><span class="stat-value">@(State.MedianSecondsToAcknowledge is double m ? m.ToString("0.0") + "s" : "–")</span><span class="stat-label">median time to acknowledge</span></div>
+</div>
+
+@if (error is not null)
+{
+    <div class="alert error">@error</div>
+}
+@if (notice is not null)
+{
+    <div class="alert info">@notice</div>
+}
+
+<div class="grid-layout">
+    <section class="grid-main">
+        @if (State.Groups.Length == 0 && error is null)
+        {
+            <p class="muted">Loading the grid…</p>
+        }
+        @foreach (var facility in State.Groups.GroupBy(g => (g.FacilityId, g.FacilityName)))
+        {
+            <div class="facility">
+                <h2>@facility.Key.FacilityName</h2>
+                @foreach (var zone in facility.GroupBy(g => (g.ZoneId, g.ZoneName)))
+                {
+                    <div class="zone">
+                        <h3>@zone.Key.ZoneName</h3>
+                        <div class="subzones">
+                            @foreach (GridGroupDto sub in zone)
+                            {
+                                ZoneInsightDto? insight = State.ZoneInsights.TryGetValue(sub.SubZoneId, out ZoneInsightDto? found) ? found : null;
+                                string severity = insight?.Severity.ToLowerInvariant() ?? "ok";
+                                <div class="@("subzone sev-" + severity)">
+                                    <div class="subzone-head">
+                                        <span class="subzone-name">@sub.SubZoneName</span>
+                                        <button class="btn tiny ghost" title="Simulate a shared gateway outage for 30 seconds"
+                                                @onclick="() => TriggerOutageAsync(sub.SubZoneId)">Simulate outage</button>
+                                    </div>
+                                    <div class="tiles">
+                                        @foreach (PulseTileDto tile in TilesFor(sub.SubZoneId))
+                                        {
+                                            <PulseTile @key="tile.Mac" Tile="tile" Pulse="IsPulsing(tile.Mac)" OnSelect="OpenDevice" />
+                                        }
+                                    </div>
+                                    @if (insight is not null && insight.Severity != "Ok")
+                                    {
+                                        <p class="@("insight sev-" + severity)">@insight.Message</p>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </section>
+
+    <aside class="side">
+        <div class="panel">
+            <h3>Legend</h3>
+            <ul class="legend">
+                <li><span class="tile mini state-healthy">●</span> Healthy: within its rolling baseline</li>
+                <li><span class="tile mini state-spike">▲</span> Spike: |z| &gt; 3 for 3 readings in a row</li>
+                <li><span class="tile mini state-fading">◌</span> Fading: heartbeat late (φ rising)</li>
+                <li><span class="tile mini state-offline">✕</span> Offline: φ over threshold</li>
+                <li><span class="tile mini state-healthy acked">●</span> Dashed border: incident acknowledged</li>
+            </ul>
+        </div>
+
+        <div class="panel">
+            <div class="panel-head">
+                <h3>Open incidents</h3>
+                <span class="pill">@State.OpenIncidents</span>
+            </div>
+            <label class="field small">
+                <span>Operator</span>
+                <input @bind="State.OperatorName" />
+            </label>
+            @if (incidents.Count == 0)
+            {
+                <p class="muted">No open incidents. The mesh is calm.</p>
+            }
+            else
+            {
+                <ul class="incident-list">
+                    @foreach (IncidentDto incident in incidents.Take(12))
+                    {
+                        <li class="@("incident kind-" + incident.Kind.ToString().ToLowerInvariant() + (incident.Acknowledged ? " acked" : ""))">
+                            <div>
+                                <strong>@incident.Kind</strong> · @incident.DeviceName
+                                <div class="muted small">
+                                    opened @incident.OpenedAt.ToLocalTime().ToString("HH:mm:ss") · occurrences: @incident.Occurrences
+                                </div>
+                            </div>
+                            @if (incident.Acknowledged)
+                            {
+                                <span class="badge ok" title="@($"by {incident.AcknowledgedBy}")">✓ @(incident.SecondsToAcknowledge?.ToString("0") ?? "0")s</span>
+                            }
+                            else
+                            {
+                                <button class="btn tiny" @onclick="() => AcknowledgeAsync(incident)">Acknowledge</button>
+                            }
+                        </li>
+                    }
+                </ul>
+            }
+        </div>
+
+        <div class="panel">
+            <h3>Simulator</h3>
+            <p class="muted small">Trigger events on demand for your demo video.</p>
+            <div class="button-stack">
+                <button class="btn" @onclick="SpikeRandomAsync">Spike a random sensor</button>
+                <button class="btn" @onclick="DisconnectRandomAsync">Disconnect a random device</button>
+                <button class="btn ghost" @onclick="ReloadAsync">Reload snapshot</button>
+            </div>
+        </div>
+    </aside>
+</div>
+
+@code {
+    private List<IncidentDto> incidents = new();
+    private long loadedIncidentVersion = -1;
+    private DateTime lastIncidentRefresh = DateTime.MinValue;
+    private string? error;
+    private string? notice;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // The grid renders immediately from the shared cache; nothing is re-fetched when returning to this view.
+        await State.EnsureStartedAsync();
+        await LoadIncidentsAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Incidents are refreshed when the shared state says they changed (at most every 2 s).
+        if (State.IncidentVersion != loadedIncidentVersion && (DateTime.UtcNow - lastIncidentRefresh).TotalSeconds >= 2)
+        {
+            await LoadIncidentsAsync();
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadIncidentsAsync()
+    {
+        loadedIncidentVersion = State.IncidentVersion;
+        lastIncidentRefresh = DateTime.UtcNow;
+        try
+        {
+            incidents = (await Api.GetIncidentsAsync(openOnly: true))?.ToList() ?? new List<IncidentDto>();
+        }
+        catch (Exception ex)
+        {
+            error = $"Could not load incidents: {ex.Message}";
+        }
+    }
+
+    private IEnumerable<PulseTileDto> TilesFor(string subZoneId) =>
+        State.Tiles.Values
+            .Where(t => string.Equals(t.SubZoneId, subZoneId, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(t => t.Name, StringComparer.OrdinalIgnoreCase);
+
+    private bool IsPulsing(string mac) => State.PulseUntil.TryGetValue(mac, out DateTime until) && until > DateTime.UtcNow;
+
+    private void OpenDevice(PulseTileDto tile) =>
+        Navigation.NavigateTo($"telemetry/devices/{MacAddress.ToSlug(tile.Mac)}");
+
+    private async Task AcknowledgeAsync(IncidentDto incident)
+    {
+        ApiResult<IncidentDto> result = await Api.AcknowledgeIncidentAsync(incident.Id, State.OperatorName);
+        if (!result.Success)
+        {
+            error = result.Error;
+            return;
+        }
+
+        notice = $"Acknowledged {incident.Kind} on {incident.DeviceName} after {(result.Value?.SecondsToAcknowledge ?? 0):0} s.";
+        await LoadIncidentsAsync();
+    }
+
+    private async Task TriggerOutageAsync(string subZoneId)
+    {
+        ApiResult<SimulatorStatusDto> result = await Api.TriggerOutageAsync(subZoneId);
+        notice = result.Success
+            ? $"Simulated a 30-second gateway outage in {subZoneId}. Watch every tile in that Sub-Zone fade together."
+            : result.Error;
+    }
+
+    private async Task SpikeRandomAsync()
+    {
+        List<PulseTileDto> candidates = State.Tiles.Values.Where(t => t.Category != SensorCategory.Actuator).ToList();
+        if (candidates.Count == 0) return;
+        PulseTileDto target = candidates[Random.Shared.Next(candidates.Count)];
+        ApiResult<SimulatorStatusDto> result = await Api.TriggerSpikeAsync(target.Mac);
+        notice = result.Success ? $"Queued a spike on {target.Name}; it appears after 3 readings." : result.Error;
+    }
+
+    private async Task DisconnectRandomAsync()
+    {
+        List<PulseTileDto> candidates = State.Tiles.Values.ToList();
+        if (candidates.Count == 0) return;
+        PulseTileDto target = candidates[Random.Shared.Next(candidates.Count)];
+        ApiResult<SimulatorStatusDto> result = await Api.TriggerDisconnectAsync(target.Mac);
+        notice = result.Success ? $"{target.Name} will stop publishing for 25 seconds." : result.Error;
+    }
+
+    private async Task ReloadAsync()
+    {
+        await State.LoadSnapshotsAsync();
+        await LoadIncidentsAsync();
+    }
+}

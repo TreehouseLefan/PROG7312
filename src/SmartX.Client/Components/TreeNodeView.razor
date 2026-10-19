@@ -1,0 +1,76 @@
+<li class="@RowClass">
+    <div class="tree-row" @onclick="Toggle">
+        <span class="twisty">@(Kids.Count > 0 ? (expanded ? "▾" : "▸") : "·")</span>
+        <span class="level-tag">@LevelTag</span>
+        <span class="node-name">@Node.Name</span>
+        @if (!string.IsNullOrWhiteSpace(Node.Description))
+        {
+            <span class="muted">@Node.Description</span>
+        }
+        @if (!string.IsNullOrWhiteSpace(Node.DeviceMac))
+        {
+            <code>@Node.DeviceMac</code>
+        }
+        @if (Node.Profile is not null)
+        {
+            <span class="profile">@ProfileText</span>
+        }
+        @if (HasIssue)
+        {
+            <span class="issue-flag" title="This node has validation issues">⚠</span>
+        }
+    </div>
+    @if (expanded && Kids.Count > 0)
+    {
+        <ul>
+            @foreach (DeploymentNode child in Kids)
+            {
+                <TreeNodeView Node="child" IssueNodeIds="IssueNodeIds" Depth="@(Depth + 1)" OnNodeSelected="OnNodeSelected" />
+            }
+        </ul>
+    }
+</li>
+
+@code {
+    [Parameter, EditorRequired] public DeploymentNode Node { get; set; } = default!;
+    [Parameter] public IReadOnlySet<string>? IssueNodeIds { get; set; }
+    [Parameter] public int Depth { get; set; }
+    [Parameter] public EventCallback<DeploymentNode> OnNodeSelected { get; set; }
+
+    private bool expanded;
+
+    protected override void OnInitialized() => expanded = Depth < 3;
+
+    private List<DeploymentNode> Kids => Node.Children ?? new List<DeploymentNode>();
+
+    private bool HasIssue => IssueNodeIds is not null && IssueNodeIds.Contains(Node.Id);
+
+    private string RowClass => "tree-node level-" + Node.Level.ToString().ToLowerInvariant() + (HasIssue ? " has-issue" : string.Empty);
+
+    private string LevelTag => Node.Level switch
+    {
+        DeploymentLevel.Facility => "FAC",
+        DeploymentLevel.Zone => "ZONE",
+        DeploymentLevel.SubZone => "SUB",
+        _ => "NODE"
+    };
+
+    private string ProfileText
+    {
+        get
+        {
+            var parts = new List<string>();
+            ConfigProfile p = Node.Profile!;
+            if (p.MaxSampleIntervalSeconds is int s) parts.Add($"≤{s}s");
+            if (p.EncryptionRequired is bool e) parts.Add(e ? "encrypted" : "plain");
+            if (p.MinValue is not null || p.MaxValue is not null) parts.Add($"range {p.MinValue}..{p.MaxValue}");
+            return string.Join(" · ", parts);
+        }
+    }
+
+    private async Task Toggle()
+    {
+        expanded = !expanded;
+        await OnNodeSelected.InvokeAsync(Node);
+    }
+}

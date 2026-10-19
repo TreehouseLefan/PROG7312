@@ -1,0 +1,81 @@
+@page "/"
+@inject SmartXApiClient Api
+
+<PageTitle>Smart-X Gateway</PageTitle>
+
+<section class="hero">
+    <h1>Smart-X Data Ingestion &amp; Validation Gateway</h1>
+    <p class="lead">
+        A .NET 10 gateway for a South African IoT mesh of hydroponic farms, utility trackers and smart-grid
+        installations. Choose an architectural pillar to begin.
+    </p>
+    @if (health is not null)
+    {
+        <p class="status ok">● API online · @health.Service · v@(health.Version)</p>
+    }
+    else if (error is not null)
+    {
+        <p class="status bad">● @error</p>
+    }
+    else
+    {
+        <p class="status">Checking the API…</p>
+    }
+</section>
+
+<section class="pillars">
+    @foreach (PillarDto pillar in pillars)
+    {
+        if (pillar.Enabled)
+        {
+            <a class="pillar enabled" href="@pillar.Route.TrimStart('/')">
+                <span class="pillar-icon">@IconFor(pillar.Key)</span>
+                <h2>@pillar.Title</h2>
+                <p>@pillar.Description</p>
+                <span class="badge ok">@pillar.Availability</span>
+            </a>
+        }
+        else
+        {
+            <div class="pillar disabled" aria-disabled="true" title="@pillar.Availability">
+                <span class="pillar-icon">@IconFor(pillar.Key)</span>
+                <h2>@pillar.Title</h2>
+                <p>@pillar.Description</p>
+                <span class="badge">🔒 @pillar.Availability</span>
+            </div>
+        }
+    }
+</section>
+
+@code {
+    private static readonly PillarDto[] Defaults =
+    {
+        new("telemetry", "Sensor Data Ingestion & Telemetry", "Register devices, validate telemetry and watch the live Pulse Grid.", true, "Part 1 · live", "/telemetry"),
+        new("commands", "Real-Time Command Stream & History", "Two-lane telemetry stream, override commands with undo, predictive suggestions.", true, "Part 2 · live", "/commands"),
+        new("mesh", "Network Topology & Mesh Routing", "Visualise and route the device mesh.", false, "Coming in the final PoE", "/mesh")
+    };
+
+    private PillarDto[] pillars = Defaults;
+    private HealthDto? health;
+    private string? error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            health = await Api.GetHealthAsync();
+            pillars = await Api.GetPillarsAsync() ?? Defaults;
+        }
+        catch (Exception ex)
+        {
+            error = $"The API could not be reached at {Api.BaseUrl} ({ex.Message}). Start SmartX.Api first.";
+        }
+    }
+
+    private static string IconFor(string key) => key switch
+    {
+        "telemetry" => "📡",
+        "commands" => "🎛️",
+        _ => "🕸️"
+    };
+}

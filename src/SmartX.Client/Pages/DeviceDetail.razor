@@ -1,0 +1,347 @@
+@page "/telemetry/devices/{Slug}"
+@implements IDisposable
+@inject SmartXApiClient Api
+@inject PulseHubClient Hub
+
+<PageTitle>@(device?.DisplayName ?? "Device") · Smart-X</PageTitle>
+
+<p><a href="telemetry">← Back to the Pulse Grid</a></p>
+
+@if (error is not null)
+{
+    <div class="alert error">@error</div>
+}
+
+@if (device is null)
+{
+    <p class="muted">@(error is null ? "Loading device…" : "")</p>
+}
+else
+{
+    <div class="page-head">
+        <div>
+            <h1>@device.DisplayName</h1>
+            <p class="muted">
+                <code>@device.MacAddress</code> · @device.Category · @device.Metric (@device.ValueKind.ToWireName()) ·
+                every @(device.ExpectedIntervalSeconds)s
+            </p>
+            <p class="breadcrumb">@device.Location.FacilityName › @device.Location.ZoneName › @device.Location.SubZoneName › @(device.Location.Room ?? device.Location.NodeId)</p>
+        </div>
+        @if (telemetry?.Tile is PulseTileDto tile)
+        {
+            <PulseTile Tile="tile" />
+        }
+    </div>
+
+    <div class="two-col">
+        <section class="panel">
+            <h2>Recent telemetry</h2>
+            @if (telemetry is null || telemetry.Points.Length == 0)
+            {
+                <p class="muted">No readings yet.</p>
+            }
+            else
+            {
+                <Sparkline Points="telemetry.Points"
+                           BandLow="@(IsNumeric ? (double?)telemetry.BandLow : null)"
+                           BandHigh="@(IsNumeric ? (double?)telemetry.BandHigh : null)"
+                           Label="@($"{device.Metric} over the last {telemetry.Points.Length} readings")" />
+                <div class="kv">
+                    <span>Latest</span><strong>@LatestText</strong>
+                    @if (IsNumeric)
+                    {
+                        <span>Rolling mean</span><strong>@telemetry.Mean.ToString("0.##") @device.Unit</strong>
+                        <span>Std deviation</span><strong>@telemetry.StandardDeviation.ToString("0.###")</strong>
+                        <span>Expected band (±@(telemetry.ZLimit)σ)</span><strong>@telemetry.BandLow.ToString("0.##") … @telemetry.BandHigh.ToString("0.##")</strong>
+                        <span>Latest z-score</span><strong>@(telemetry.Tile?.ZScore.ToString("0.00") ?? "–")</strong>
+                    }
+                    <span>Heartbeat suspicion φ</span><strong>@(telemetry.Tile?.Phi.ToString("0.00") ?? "–")</strong>
+                    <span>Total readings stored</span><strong>@telemetry.TotalReceived.ToString("N0")</strong>
+                </div>
+                <p class="muted small">Shaded band = rolling mean ± 3σ. Red dots are readings outside the band.</p>
+            }
+            <div class="button-row">
+                <button class="btn" @onclick="SpikeAsync">Simulate spike</button>
+                <button class="btn" @onclick="DisconnectAsync">Simulate disconnect (25 s)</button>
+                <button class="btn ghost" @onclick="RefreshAsync">Refresh</button>
+            </div>
+            @if (notice is not null)
+            {
+                <div class="alert info">@notice</div>
+            }
+        </section>
+
+        <section class="panel">
+            <h2>Placement check (recursive)</h2>
+            @if (placement is null)
+            {
+                <p class="muted">Checking…</p>
+            }
+            else
+            {
+                <p class="@(placement.IsSafe ? "status ok" : "status bad")">
+                    @(placement.IsSafe ? "✓ Safely configured" : "✕ Unsafe placement")
+                </p>
+                <p class="chain">@placement.Chain</p>
+                <ul class="checks">
+                    @foreach (string check in placement.Checks)
+                    {
+                        <li>@check</li>
+                    }
+                    @foreach (ValidationIssueDto issue in placement.Issues)
+                    {
+                        <li class="@("issue " + issue.Severity.ToLowerInvariant())">@issue.Severity: @issue.Message</li>
+                    }
+                </ul>
+            }
+
+            <h2>Incidents</h2>
+            @if (incidents.Length == 0)
+            {
+                <p class="muted">No incidents recorded for this device.</p>
+            }
+            else
+            {
+                <ul class="incident-list">
+                    @foreach (IncidentDto incident in incidents.Take(8))
+                    {
+                        <li class="@("incident kind-" + incident.Kind.ToString().ToLowerInvariant())">
+                            <div>
+                                <strong>@incident.Kind</strong> · @(incident.IsOpen ? "open" : "closed") · occurrences: @incident.Occurrences
+                                <div class="muted small">opened @incident.OpenedAt.ToLocalTime().ToString("HH:mm:ss")</div>
+                            </div>
+                            @if (incident.IsOpen && !incident.Acknowledged)
+                            {
+                                <button class="btn tiny" @onclick="() => AcknowledgeAsync(incident.Id)">Acknowledge</button>
+                            }
+                            else if (incident.Acknowledged)
+                            {
+                                <span class="badge ok">✓ @incident.AcknowledgedBy</span>
+                            }
+                        </li>
+                    }
+                </ul>
+            }
+        </section>
+    </div>
+
+    <section class="panel">
+        <h2>Configuration files, deployment photos &amp; hardware logs</h2>
+        <div class="upload-row">
+            <select @bind="uploadKind">
+                @foreach (string kind in AttachmentKinds.All)
+                {
+                    <option value="@kind">@kind</option>
+                }
+            </select>
+            <InputFile OnChange="OnFileChosen" accept=".json,.yaml,.yml,.xml,.cfg,.ini,.txt,.log,.csv,.jpg,.jpeg,.png,.webp,.pdf,.bin" />
+            <button class="btn primary" @onclick="UploadAsync" disabled="@(chosenFile is null || uploading)">
+                @(uploading ? "Uploading…" : "Upload")
+            </button>
+        </div>
+        <p class="muted small">Max 10 MB. Files are streamed to the API with a multipart upload and hashed (SHA-256) on arrival.</p>
+        @if (uploadMessage is not null)
+        {
+            <div class="@(uploadOk ? "alert info" : "alert error")">@uploadMessage</div>
+        }
+
+        @if (attachments.Length == 0)
+        {
+            <p class="muted">No attachments yet.</p>
+        }
+        else
+        {
+            <div class="attachments">
+                @foreach (AttachmentDto attachment in attachments)
+                {
+                    <div class="attachment">
+                        @if (attachment.ContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+                        {
+                            <img src="@Api.AttachmentUrl(attachment.Id)" alt="@attachment.FileName" />
+                        }
+                        else
+                        {
+                            <div class="file-icon">📄</div>
+                        }
+                        <div>
+                            <a href="@Api.AttachmentUrl(attachment.Id)" target="_blank" rel="noopener">@attachment.FileName</a>
+                            <div class="muted small">
+                                @attachment.Kind · @((attachment.SizeBytes / 1024.0).ToString("0.0")) KB ·
+                                @attachment.UploadedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+                            </div>
+                            <div class="muted tiny-text">sha256 @(attachment.Sha256.Length > 16 ? attachment.Sha256[..16] : attachment.Sha256)…</div>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </section>
+}
+
+@code {
+    [Parameter] public string Slug { get; set; } = string.Empty;
+
+    private SensorDeviceDto? device;
+    private DeviceTelemetryDto? telemetry;
+    private PlacementResultDto? placement;
+    private AttachmentDto[] attachments = Array.Empty<AttachmentDto>();
+    private IncidentDto[] incidents = Array.Empty<IncidentDto>();
+    private IBrowserFile? chosenFile;
+    private string uploadKind = AttachmentKinds.Configuration;
+    private string? uploadMessage;
+    private bool uploadOk;
+    private bool uploading;
+    private string? error;
+    private string? notice;
+    private DateTime lastRefresh = DateTime.MinValue;
+
+    private bool IsNumeric => device is not null && device.ValueKind != TelemetryValueKind.Bool;
+
+    private string LatestText
+    {
+        get
+        {
+            if (telemetry is null || telemetry.Points.Length == 0 || device is null) return "–";
+            double last = telemetry.Points[^1].Value;
+            return IsNumeric ? $"{last:0.##} {device.Unit}" : (last >= 0.5 ? "ON" : "OFF");
+        }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        try
+        {
+            device = await Api.GetDeviceAsync(Slug);
+            if (device is null)
+            {
+                error = $"No device matches '{Slug}'.";
+                return;
+            }
+
+            error = null;
+            placement = await Api.GetDevicePlacementAsync(device.MacAddress);
+            attachments = await Api.GetAttachmentsAsync(device.MacAddress) ?? Array.Empty<AttachmentDto>();
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            error = $"The API could not be reached: {ex.Message}";
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        Hub.PulseReceived += OnPulse;
+        try
+        {
+            await Hub.EnsureStartedAsync();
+        }
+        catch (Exception ex)
+        {
+            notice = $"Live updates unavailable: {ex.Message}";
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        if (device is null) return;
+        telemetry = await Api.GetDeviceTelemetryAsync(device.MacAddress, 150);
+        incidents = await Api.GetIncidentsAsync(openOnly: false, device.MacAddress) ?? Array.Empty<IncidentDto>();
+        lastRefresh = DateTime.UtcNow;
+    }
+
+    private void OnPulse(PulseBatchDto batch)
+    {
+        if (device is null || (DateTime.UtcNow - lastRefresh).TotalSeconds < 2)
+        {
+            return;
+        }
+
+        _ = InvokeAsync(async () =>
+        {
+            try
+            {
+                await RefreshAsync();
+                StateHasChanged();
+            }
+            catch (Exception)
+            {
+                // The next pulse will retry.
+            }
+        });
+    }
+
+    private async Task SpikeAsync()
+    {
+        if (device is null) return;
+        ApiResult<SimulatorStatusDto> result = await Api.TriggerSpikeAsync(device.MacAddress);
+        notice = result.Success ? "Spike queued: the tile turns ▲ after three out-of-band readings." : result.Error;
+    }
+
+    private async Task DisconnectAsync()
+    {
+        if (device is null) return;
+        ApiResult<SimulatorStatusDto> result = await Api.TriggerDisconnectAsync(device.MacAddress);
+        notice = result.Success ? "Device silenced: watch φ rise, the tile fade, then go offline." : result.Error;
+    }
+
+    private async Task AcknowledgeAsync(Guid id)
+    {
+        await Api.AcknowledgeIncidentAsync(id, "ops-engineer");
+        await RefreshAsync();
+    }
+
+    private void OnFileChosen(InputFileChangeEventArgs args)
+    {
+        chosenFile = args.File;
+        uploadMessage = null;
+        string name = args.File.Name.ToLowerInvariant();
+        if (name.EndsWith(".jpg") || name.EndsWith(".jpeg") || name.EndsWith(".png") || name.EndsWith(".webp"))
+        {
+            uploadKind = AttachmentKinds.DeploymentPhoto;
+        }
+        else if (name.EndsWith(".log") || name.EndsWith(".txt") || name.EndsWith(".csv"))
+        {
+            uploadKind = AttachmentKinds.HardwareLog;
+        }
+    }
+
+    private async Task UploadAsync()
+    {
+        if (device is null || chosenFile is null) return;
+
+        if (chosenFile.Size > SmartXApiClient.MaxUploadBytes)
+        {
+            uploadOk = false;
+            uploadMessage = "That file is larger than 10 MB.";
+            return;
+        }
+
+        uploading = true;
+        try
+        {
+            ApiResult<AttachmentDto> result = await Api.UploadAttachmentAsync(device.MacAddress, chosenFile, uploadKind);
+            uploadOk = result.Success;
+            uploadMessage = result.Success
+                ? $"Uploaded {result.Value?.FileName}."
+                : $"{result.Error} {string.Join(" ", result.Details)}";
+
+            if (result.Success)
+            {
+                chosenFile = null;
+                attachments = await Api.GetAttachmentsAsync(device.MacAddress) ?? Array.Empty<AttachmentDto>();
+            }
+        }
+        catch (Exception ex)
+        {
+            uploadOk = false;
+            uploadMessage = $"Upload failed: {ex.Message}";
+        }
+        finally
+        {
+            uploading = false;
+        }
+    }
+
+    public void Dispose() => Hub.PulseReceived -= OnPulse;
+}

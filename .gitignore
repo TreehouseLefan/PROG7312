@@ -1,0 +1,22 @@
+# Build output
+bin/
+obj/
+out/
+publish/
+TestResults/
+
+# IDE / editor
+.vs/
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.user
+*.suo
+*.swp
+.DS_Store
+
+# Runtime data written by the API (uploaded files and index)
+App_Data/
+
+# Local environment files
+*.env

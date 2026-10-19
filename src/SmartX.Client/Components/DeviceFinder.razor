@@ -1,0 +1,218 @@
+@inherits LiveComponent
+
+<section class="panel finder">
+    <div class="panel-head">
+        <h2>Find devices</h2>
+        @if (Ui.LastResults is DeviceSearchResponseDto last)
+        {
+            <span class="muted tiny-text" title="@last.Strategy">@last.Matched match(es) · @last.ElapsedMicroseconds.ToString("0") µs</span>
+        }
+    </div>
+
+    <div class="search-row">
+        <input type="search"
+               placeholder="Name, room, Sub-Zone or MAC — e.g. pump a"
+               value="@Ui.Query"
+               @oninput="OnQueryInput"
+               @onkeydown="OnKeyDown"
+               aria-label="Search devices" />
+        <button class="btn primary" @onclick="() => SearchAsync(record: true)">Search</button>
+    </div>
+
+    <div class="filter-row">
+        <select value="@CategoryValue" @onchange="OnCategoryChanged" aria-label="Category">
+            <option value="">All categories</option>
+            @foreach (SensorCategory category in Enum.GetValues<SensorCategory>())
+            {
+                <option value="@category">@category</option>
+            }
+        </select>
+        <select value="@Ui.State" @onchange="OnStateChanged" aria-label="Alert state">
+            <option value="Any">Any state</option>
+            <option value="Healthy">Healthy</option>
+            <option value="Spike">Spike</option>
+            <option value="Fading">Fading</option>
+            <option value="Offline">Offline</option>
+        </select>
+        <label class="check small">
+            <input type="checkbox" checked="@Ui.AlertsOnly" @onchange="OnAlertsOnlyChanged" />
+            <span>Active alerts only</span>
+        </label>
+    </div>
+
+    @if (error is not null)
+    {
+        <div class="alert error">@error</div>
+    }
+
+    @if (Ui.LastResults is DeviceSearchResponseDto response)
+    {
+        <p class="tiny-text muted">@response.Strategy</p>
+        <ul class="results">
+            @foreach (DeviceSearchResultDto result in response.Results)
+            {
+                string mac = result.Device.MacAddress;
+                <li class="@ResultClass(result)" @onclick="() => OnSelect.InvokeAsync(mac)" title="@mac">
+                    <span class="@("dot state-" + result.State.ToString().ToLowerInvariant())">@Glyph(result.State)</span>
+                    <span class="result-name">@result.Device.DisplayName</span>
+                    <span class="result-value">@ValueText(result)</span>
+                    <span class="result-zone muted">@result.Device.Location.SubZoneName</span>
+                    @foreach (AlertType alert in result.ActiveAlerts)
+                    {
+                        <span class="chip alert-chip">@alert</span>
+                    }
+                </li>
+            }
+        </ul>
+        @if (response.Results.Length == 0)
+        {
+            <p class="muted small">No device matches every filter.</p>
+        }
+    }
+</section>
+
+@code {
+    [Parameter] public EventCallback<string> OnSelect { get; set; }
+
+    private CancellationTokenSource? debounce;
+    private PeriodicTimer? refreshTimer;
+    private string? error;
+
+    private CommandStreamUiState Ui => State.CommandUi;
+
+    private string CategoryValue => Ui.Category?.ToString() ?? string.Empty;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Ui.LastResults is null)
+        {
+            await SearchAsync(record: false);
+        }
+
+        _ = RefreshLoopAsync();
+    }
+
+    /// <summary>Re-runs the current filter every 3 s so states and alert chips stay live.</summary>
+    private async Task RefreshLoopAsync()
+    {
+        refreshTimer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+        try
+        {
+            while (await refreshTimer.WaitForNextTickAsync())
+            {
+                await SearchAsync(record: false);
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            // Component removed.
+        }
+    }
+
+    /// <summary>Called by the page when a "Search" suggestion is accepted.</summary>
+    public async Task RunQueryAsync(string query)
+    {
+        Ui.Query = query;
+        await SearchAsync(record: false);
+    }
+
+    public async Task SearchAsync(bool record)
+    {
+        try
+        {
+            ApiResult<DeviceSearchResponseDto> result = await Api.SearchDevicesAsync(Ui.Query, Ui.Category, Ui.State, Ui.AlertsOnly, record);
+            if (result.Success)
+            {
+                Ui.LastResults = result.Value;
+                error = null;
+            }
+            else
+            {
+                error = $"{result.Error} {string.Join(" ", result.Details)}";
+            }
+        }
+        catch (Exception ex)
+        {
+            error = $"Search failed: {ex.Message}";
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnQueryInput(ChangeEventArgs e)
+    {
+        Ui.Query = e.Value?.ToString() ?? string.Empty;
+        debounce?.Cancel();
+        debounce = new CancellationTokenSource();
+        CancellationToken token = debounce.Token;
+
+        try
+        {
+            await Task.Delay(250, token); // live filter while typing; not recorded as a search
+            await SearchAsync(record: false);
+        }
+        catch (TaskCanceledException)
+        {
+            // A newer keystroke replaced this one.
+        }
+    }
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            debounce?.Cancel();
+            await SearchAsync(record: true); // a committed search: the engine learns from it
+        }
+    }
+
+    private async Task OnCategoryChanged(ChangeEventArgs e)
+    {
+        string? value = e.Value?.ToString();
+        Ui.Category = Enum.TryParse(value, out SensorCategory category) ? (SensorCategory?)category : null;
+        await SearchAsync(record: false);
+    }
+
+    private async Task OnStateChanged(ChangeEventArgs e)
+    {
+        Ui.State = e.Value?.ToString() ?? "Any";
+        await SearchAsync(record: false);
+    }
+
+    private async Task OnAlertsOnlyChanged(ChangeEventArgs e)
+    {
+        Ui.AlertsOnly = e.Value is bool b && b;
+        await SearchAsync(record: false);
+    }
+
+    private string ResultClass(DeviceSearchResultDto result) =>
+        "result" + (string.Equals(result.Device.MacAddress, Ui.SelectedMac, StringComparison.OrdinalIgnoreCase) ? " selected" : string.Empty)
+                 + (result.ActiveAlerts.Length > 0 ? " has-alert" : string.Empty);
+
+    private static string Glyph(PulseState state) => state switch
+    {
+        PulseState.Healthy => "●",
+        PulseState.Spike => "▲",
+        PulseState.Fading => "◌",
+        PulseState.Offline => "✕",
+        _ => "…"
+    };
+
+    private static string ValueText(DeviceSearchResultDto result)
+    {
+        if (result.Device.Category == SensorCategory.Actuator)
+        {
+            bool on = result.ActuatorDesired ?? result.LastValue >= 0.5;
+            return result.Device.Metric == "valve_state" ? (on ? "open" : "closed") : (on ? "ON" : "OFF");
+        }
+
+        return result.LastValue.ToString("0.#", CultureInfo.InvariantCulture) + result.Device.Unit;
+    }
+
+    public override void Dispose()
+    {
+        debounce?.Cancel();
+        refreshTimer?.Dispose();
+        base.Dispose();
+    }
+}

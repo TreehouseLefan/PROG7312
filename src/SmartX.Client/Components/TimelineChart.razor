@@ -1,0 +1,218 @@
+@inherits LiveComponent
+
+<div class="timeline">
+    <div class="timeline-head">
+        <div class="segmented" role="group" aria-label="Time window">
+            @foreach (int minutes in Windows)
+            {
+                <button class="@(Minutes == minutes ? "seg active" : "seg")" @onclick="() => SetWindowAsync(minutes)">@Label(minutes)</button>
+            }
+        </div>
+        @if (data is not null)
+        {
+            <span class="tiny-text muted" title="SortedDictionary range query + single-pass downsampling">
+                @data.ReturnedPoints of @data.StoredPoints stored points · @data.ElapsedMicroseconds.ToString("0") µs
+            </span>
+        }
+    </div>
+
+    @if (data is null || data.Points.Length < 2)
+    {
+        <div class="timeline-empty muted small">@(loading ? "Loading timeline…" : "Not enough readings in this window yet.")</div>
+    }
+    else
+    {
+        <svg class="timeline-svg" viewBox="0 0 @F(W) @F(H)" role="img" aria-label="@($"{data.Name} {data.Metric} over the last {Minutes} minutes")">
+            @for (int i = 0; i <= 4; i++)
+            {
+                double value = yMin + ((yMax - yMin) * i / 4);
+                double y = Y(value);
+                <g>
+                    <line class="grid" x1="@F(Left)" x2="@F(W - Right)" y1="@F(y)" y2="@F(y)" />
+                    <text class="axis" x="@F(Left - 6)" y="@F(y + 4)" text-anchor="end">@(value.ToString(Math.Abs(yMax - yMin) < 10 ? "0.0" : "0"))</text>
+                </g>
+            }
+
+            @if (data.Points.Length > 1)
+            {
+                <polygon class="range" points="@RangePolygon()" />
+                <polyline class="mean" points="@MeanLine()" />
+            }
+
+            @if (data.CriticalLow is double low && low >= yMin && low <= yMax)
+            {
+                <g>
+                    <line class="threshold" x1="@F(Left)" x2="@F(W - Right)" y1="@F(Y(low))" y2="@F(Y(low))" />
+                    <text class="threshold-label" x="@F(W - Right)" y="@F(Y(low) - 4)" text-anchor="end">critical &lt; @(low.ToString("0") + data.Unit)</text>
+                </g>
+            }
+
+            @if (data.CriticalHigh is double high && high >= yMin && high <= yMax)
+            {
+                <g>
+                    <line class="threshold" x1="@F(Left)" x2="@F(W - Right)" y1="@F(Y(high))" y2="@F(Y(high))" />
+                    <text class="threshold-label" x="@F(W - Right)" y="@F(Y(high) - 4)" text-anchor="end">critical ≥ @(high.ToString("N0") + " " + data.Unit)</text>
+                </g>
+            }
+
+            <text class="axis" x="@F(Left)" y="@F(H - 4)">@data.From.ToLocalTime().ToString("HH:mm")</text>
+            <text class="axis" x="@F(W - Right)" y="@F(H - 4)" text-anchor="end">now</text>
+        </svg>
+        <div class="timeline-legend tiny-text muted">
+            <span><span class="swatch mean"></span> mean</span>
+            <span><span class="swatch range"></span> min–max per bucket (spikes are never averaged away)</span>
+            @if (data.CriticalLow is not null || data.CriticalHigh is not null)
+            {
+                <span><span class="swatch threshold"></span> critical threshold</span>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private const double W = 640;
+    private const double H = 220;
+    private const double Left = 44;
+    private const double Right = 10;
+    private const double Top = 10;
+    private const double Bottom = 22;
+    private static readonly int[] Windows = { 5, 15, 60, 240 };
+
+    [Parameter, EditorRequired] public string Mac { get; set; } = string.Empty;
+
+    private TimelineDto? data;
+    private string? loadedMac;
+    private bool loading;
+    private double yMin;
+    private double yMax = 1;
+    private PeriodicTimer? timer;
+
+    private int Minutes => State.CommandUi.TimelineMinutes;
+
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+        _ = PollAsync();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!string.Equals(loadedMac, Mac, StringComparison.OrdinalIgnoreCase))
+        {
+            data = null;
+            await LoadAsync();
+        }
+    }
+
+    private async Task PollAsync()
+    {
+        timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        try
+        {
+            while (await timer.WaitForNextTickAsync())
+            {
+                await LoadAsync();
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            // Component removed.
+        }
+    }
+
+    private async Task SetWindowAsync(int minutes)
+    {
+        State.CommandUi.TimelineMinutes = minutes;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        if (string.IsNullOrWhiteSpace(Mac))
+        {
+            return;
+        }
+
+        loading = true;
+        string mac = Mac;
+        try
+        {
+            TimelineDto? result = await Api.GetTimelineAsync(mac, Minutes, 240);
+            if (result is not null && string.Equals(mac, Mac, StringComparison.OrdinalIgnoreCase))
+            {
+                data = result;
+                loadedMac = mac;
+                ComputeScale();
+            }
+        }
+        catch (Exception)
+        {
+            // Keep the last good chart; the next poll retries.
+        }
+        finally
+        {
+            loading = false;
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void ComputeScale()
+    {
+        if (data is null || data.Points.Length == 0)
+        {
+            return;
+        }
+
+        yMin = data.Points.Min(p => p.Min);
+        yMax = data.Points.Max(p => p.Max);
+        if (data.CriticalLow is double low)
+        {
+            yMin = Math.Min(yMin, low);
+            yMax = Math.Max(yMax, low);
+        }
+
+        if (data.CriticalHigh is double high && high <= yMax * 1.6)
+        {
+            yMax = Math.Max(yMax, high);
+        }
+
+        double pad = Math.Max((yMax - yMin) * 0.08, 0.5);
+        yMin -= pad;
+        yMax += pad;
+    }
+
+    private double X(DateTimeOffset t)
+    {
+        if (data is null)
+        {
+            return Left;
+        }
+
+        double span = Math.Max(1, (data.To - data.From).TotalSeconds);
+        double fraction = Math.Clamp((t - data.From).TotalSeconds / span, 0, 1);
+        return Left + ((W - Left - Right) * fraction);
+    }
+
+    private double Y(double value) => Top + ((H - Top - Bottom) * (1 - ((value - yMin) / Math.Max(1e-9, yMax - yMin))));
+
+    private static string F(double value) => value.ToString("0.##", CultureInfo.InvariantCulture);
+
+    private string MeanLine() =>
+        string.Join(' ', data!.Points.Select(p => F(X(p.Timestamp)) + "," + F(Y(p.Value))));
+
+    private string RangePolygon()
+    {
+        IEnumerable<string> top = data!.Points.Select(p => F(X(p.Timestamp)) + "," + F(Y(p.Max)));
+        IEnumerable<string> bottom = Enumerable.Reverse(data.Points).Select(p => F(X(p.Timestamp)) + "," + F(Y(p.Min)));
+        return string.Join(' ', top.Concat(bottom));
+    }
+
+    private static string Label(int minutes) => minutes < 60 ? $"{minutes}m" : $"{minutes / 60}h";
+
+    public override void Dispose()
+    {
+        timer?.Dispose();
+        base.Dispose();
+    }
+}

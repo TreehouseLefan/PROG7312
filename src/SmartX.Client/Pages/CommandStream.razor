@@ -1,0 +1,210 @@
+@page "/commands"
+@inherits LiveComponent
+
+<PageTitle>Command Stream · Smart-X</PageTitle>
+
+<div class="page-head">
+    <div>
+        <h1>Real-Time Command Stream &amp; History</h1>
+        <p class="muted">
+            Live two-lane telemetry, manual override commands with undo, unique alert tracking, and an action engine that
+            learns from what operators search for and do.
+        </p>
+    </div>
+    <label class="field small operator">
+        <span>Operator</span>
+        <input @bind="State.OperatorName" />
+    </label>
+</div>
+
+<QueueLanes />
+
+<div class="stream-layout">
+    <div class="stream-col">
+        <SuggestionsPanel OnSelectDevice="SelectDeviceAsync" OnRunSearch="RunSearchAsync" />
+    </div>
+
+    <div class="stream-col">
+        <DeviceFinder @ref="finder" OnSelect="SelectDeviceAsync" />
+    </div>
+
+    <div class="stream-col">
+        <section class="panel device-panel">
+            @if (Selected is SensorDeviceDto device)
+            {
+                <div class="panel-head">
+                    <h2>@device.DisplayName</h2>
+                    <a class="small" href="@($"telemetry/devices/{MacAddress.ToSlug(device.MacAddress)}")">Full profile →</a>
+                </div>
+                <p class="muted small">
+                    <code>@device.MacAddress</code> · @device.Category · @device.Location.FacilityName › @device.Location.ZoneName › @device.Location.SubZoneName
+                </p>
+
+                @if (Tile is PulseTileDto tile)
+                {
+                    <div class="device-state">
+                        <span class="@("dot state-" + tile.State.ToString().ToLowerInvariant())"></span>
+                        <span>@tile.State</span>
+                        <span class="muted small">z = @tile.ZScore.ToString("0.00") · φ = @tile.Phi.ToString("0.00")</span>
+                        @foreach (AlertType alert in ActiveAlerts(device.MacAddress))
+                        {
+                            <span class="chip alert-chip">@alert</span>
+                        }
+                    </div>
+                }
+
+                @if (device.Category == SensorCategory.Actuator)
+                {
+                    ActuatorShadowDto? shadow = State.Shadows.TryGetValue(device.MacAddress, out ActuatorShadowDto? found) ? found : null;
+                    <div class="actuator">
+                        <div class="shadow">
+                            <div><span class="muted small">Desired</span> <strong>@StateWord(device, shadow?.Desired)</strong></div>
+                            <div><span class="muted small">Reported by device</span> <strong>@StateWord(device, shadow?.Reported)</strong></div>
+                            <div class="@(shadow?.InSync == true ? "sync ok" : "sync pending")">@(shadow?.InSync == true ? "✓ in sync" : "… waiting for device")</div>
+                        </div>
+                        <div class="button-row">
+                            <button class="btn primary" @onclick="() => CommandAsync(CommandAction.TurnOn)" disabled="@(busy || shadow?.Desired == true)">@OnLabel(device)</button>
+                            <button class="btn" @onclick="() => CommandAsync(CommandAction.TurnOff)" disabled="@(busy || shadow?.Desired == false)">@OffLabel(device)</button>
+                            <button class="btn ghost" @onclick="() => CommandAsync(CommandAction.Toggle)" disabled="@busy">Toggle</button>
+                        </div>
+                    </div>
+                }
+
+                @if (commandMessage is not null)
+                {
+                    <div class="@(commandOk ? "alert info" : "alert error")">@commandMessage</div>
+                }
+
+                <TimelineChart Mac="@device.MacAddress" />
+            }
+            else
+            {
+                <h2>Device</h2>
+                <p class="muted">Select a device from the finder, an alert, or an insight to see its timeline and send commands.</p>
+                <div class="quick-picks">
+                    @foreach (ActuatorShadowDto shadow in State.Shadows.Values.Where(s => s.Metric == "pump_relay"))
+                    {
+                        <button class="btn" @onclick="() => SelectDeviceAsync(shadow.Mac)">@shadow.Name (@(shadow.Desired ? "on" : "off"))</button>
+                    }
+                </div>
+            }
+        </section>
+    </div>
+</div>
+
+<div class="stream-layout bottom">
+    <div class="stream-col wide"><StreamFeed /></div>
+    <div class="stream-col"><AlertBoard OnSelectDevice="SelectDeviceAsync" /></div>
+    <div class="stream-col"><CommandHistoryPanel /></div>
+</div>
+
+<HistoryLog />
+
+@code {
+    private DeviceFinder? finder;
+    private bool busy;
+    private string? commandMessage;
+    private bool commandOk;
+
+    private SensorDeviceDto? Selected => State.CommandUi.SelectedDevice;
+
+    private PulseTileDto? Tile =>
+        Selected is not null && State.Tiles.TryGetValue(Selected.MacAddress, out PulseTileDto? tile) ? tile : null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await State.EnsureStartedAsync();
+
+        // Returning to this page restores the previous selection; refresh it from the API in the background.
+        if (State.CommandUi.SelectedMac is string mac && State.CommandUi.SelectedDevice is null)
+        {
+            State.CommandUi.SelectedDevice = await Api.GetDeviceAsync(mac);
+        }
+    }
+
+    private async Task SelectDeviceAsync(string mac)
+    {
+        commandMessage = null;
+        State.CommandUi.SelectedMac = mac;
+
+        SensorDeviceDto? device = State.CommandUi.LastResults?.Results
+            .Select(r => r.Device)
+            .FirstOrDefault(d => string.Equals(d.MacAddress, mac, StringComparison.OrdinalIgnoreCase));
+
+        device ??= await Api.GetDeviceAsync(mac);
+        State.CommandUi.SelectedDevice = device;
+        State.NotifyChanged();
+
+        if (device is not null)
+        {
+            await Api.InspectDeviceAsync(device.MacAddress); // the engine learns which devices operators open
+        }
+    }
+
+    private async Task RunSearchAsync(string query)
+    {
+        if (finder is not null)
+        {
+            await finder.RunQueryAsync(query);
+        }
+    }
+
+    private async Task CommandAsync(CommandAction action)
+    {
+        if (Selected is not SensorDeviceDto device)
+        {
+            return;
+        }
+
+        busy = true;
+        try
+        {
+            ApiResult<CommandResultDto> result = await Api.IssueCommandAsync(
+                new IssueCommandRequest(action, device.MacAddress, null, State.OperatorName, null));
+
+            if (result.Success && result.Value is CommandResultDto done)
+            {
+                State.ApplyCommandResult(done);
+                commandOk = true;
+                commandMessage = done.Message + " The device confirms it in its next telemetry packet.";
+            }
+            else
+            {
+                commandOk = false;
+                commandMessage = result.Error;
+            }
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private AlertType[] ActiveAlerts(string mac) =>
+        State.Alerts?.Active.Where(a => string.Equals(a.Mac, mac, StringComparison.OrdinalIgnoreCase)).Select(a => a.Type).ToArray()
+        ?? Array.Empty<AlertType>();
+
+    private static string StateWord(SensorDeviceDto device, bool? state)
+    {
+        if (state is not bool value)
+        {
+            return "–";
+        }
+
+        return device.Metric == "valve_state" ? (value ? "Open" : "Closed") : (value ? "On" : "Off");
+    }
+
+    private static string OnLabel(SensorDeviceDto device) => device.Metric switch
+    {
+        "valve_state" => "Open valve",
+        "pump_relay" => "Start pump",
+        _ => "Switch on"
+    };
+
+    private static string OffLabel(SensorDeviceDto device) => device.Metric switch
+    {
+        "valve_state" => "Close valve",
+        "pump_relay" => "Stop pump",
+        _ => "Switch off"
+    };
+}

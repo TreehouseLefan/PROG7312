@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    SmartX.Core holds the domain logic shared by the API and the Blazor client:
+    generics (TelemetryPacket<T>), operator overloading (PowerMeterReading, RunningStats),
+    jagged / multi-dimensional arrays (TelemetryBatchProcessor) and recursion
+    (DeploymentTreeValidator, TopologyNavigator).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>SmartX.Core</RootNamespace>
+  </PropertyGroup>
+
+</Project>

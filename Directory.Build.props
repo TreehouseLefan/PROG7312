@@ -1,0 +1,10 @@
+<Project>
+  <!-- Shared settings for every project in the Smart-X solution -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Authors>Smart-X PoE Student</Authors>
+    <Product>Smart-X Data Ingestion and Validation Gateway</Product>
+  </PropertyGroup>
+</Project>

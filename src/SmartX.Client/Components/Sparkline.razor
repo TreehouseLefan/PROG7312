@@ -1,0 +1,82 @@
+<svg class="sparkline" viewBox="0 0 @F(W) @F(H)" preserveAspectRatio="none" role="img" aria-label="@Label">
+    @if (BandLow is double low && BandHigh is double high && Points.Count > 1)
+    {
+        <rect class="band" x="0" y="@F(Y(high))" width="@F(W)" height="@F(Math.Max(0, Y(low) - Y(high)))" />
+    }
+    @if (Points.Count > 1)
+    {
+        <polyline class="line" points="@PolylinePoints" />
+    }
+    @foreach (int index in AnomalyIndexes)
+    {
+        <circle class="anomaly" cx="@F(X(index))" cy="@F(Y(Points[index].Value))" r="3.5" />
+    }
+</svg>
+
+@code {
+    private const double W = 600;
+    private const double H = 170;
+    private const double Pad = 8;
+
+    [Parameter] public IReadOnlyList<TelemetryPointDto> Points { get; set; } = Array.Empty<TelemetryPointDto>();
+    [Parameter] public double? BandLow { get; set; }
+    [Parameter] public double? BandHigh { get; set; }
+    [Parameter] public string Label { get; set; } = "Telemetry sparkline";
+
+    private double min;
+    private double max;
+
+    protected override void OnParametersSet()
+    {
+        if (Points.Count == 0)
+        {
+            min = 0;
+            max = 1;
+            return;
+        }
+
+        min = Points.Min(p => p.Value);
+        max = Points.Max(p => p.Value);
+        if (BandLow is double low) min = Math.Min(min, low);
+        if (BandHigh is double high) max = Math.Max(max, high);
+        if (max - min < 1e-9)
+        {
+            max += 1;
+            min -= 1;
+        }
+    }
+
+    private double X(int i) => Points.Count <= 1 ? W / 2 : Pad + ((W - (2 * Pad)) * i / (Points.Count - 1));
+
+    private double Y(double value) => Pad + ((H - (2 * Pad)) * (1 - ((value - min) / (max - min))));
+
+    private static string F(double value) => value.ToString("0.##", CultureInfo.InvariantCulture);
+
+    private string PolylinePoints
+    {
+        get
+        {
+            var builder = new StringBuilder();
+            for (int i = 0; i < Points.Count; i++)
+            {
+                if (i > 0) builder.Append(' ');
+                builder.Append(F(X(i))).Append(',').Append(F(Y(Points[i].Value)));
+            }
+
+            return builder.ToString();
+        }
+    }
+
+    private IEnumerable<int> AnomalyIndexes
+    {
+        get
+        {
+            if (BandLow is not double low || BandHigh is not double high)
+            {
+                return Enumerable.Empty<int>();
+            }
+
+            return Enumerable.Range(0, Points.Count).Where(i => Points[i].Value < low || Points[i].Value > high).ToList();
+        }
+    }
+}

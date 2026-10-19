@@ -1,0 +1,121 @@
+@page "/telemetry/power"
+@inject SmartXApiClient Api
+
+<PageTitle>Power aggregation · Smart-X</PageTitle>
+
+<h1>Smart-meter aggregation</h1>
+<p class="muted">
+    Uses the overloaded operators on <code>PowerMeterReading</code>:
+    <code>meter3 = meter1 + meter2</code>, <code>delta = meter1 - meter2</code> and <code>meter1 &gt; meter2</code>.
+</p>
+
+@if (error is not null)
+{
+    <div class="alert error">@error</div>
+}
+
+<section class="panel">
+    <div class="field-row">
+        <label class="field">
+            <span>Meter 1</span>
+            <select @bind="meterA">
+                @foreach (PowerMeterDto meter in meters)
+                {
+                    <option value="@meter.MeterId">@meter.Name</option>
+                }
+            </select>
+        </label>
+        <label class="field">
+            <span>Meter 2</span>
+            <select @bind="meterB">
+                @foreach (PowerMeterDto meter in meters)
+                {
+                    <option value="@meter.MeterId">@meter.Name</option>
+                }
+            </select>
+        </label>
+        <label class="field">
+            <span>Tolerance (W)</span>
+            <input type="number" @bind="tolerance" />
+        </label>
+    </div>
+    <button class="btn primary" @onclick="AggregateAsync" disabled="@(meters.Length == 0)">Aggregate &amp; compare</button>
+</section>
+
+@if (result is not null)
+{
+    <section class="panel">
+        <h2>Result</h2>
+        <div class="equation">
+            @for (int i = 0; i < result.Inputs.Length; i++)
+            {
+                PowerMeterDto input = result.Inputs[i];
+                if (i > 0)
+                {
+                    <span class="op">+</span>
+                }
+                <span class="term">@input.Name<br /><strong>@input.Watts.ToString("N0") W</strong></span>
+            }
+            <span class="op">=</span>
+            <span class="term total">Meter 3 (aggregate)<br /><strong>@result.Aggregate.Watts.ToString("N0") W</strong></span>
+        </div>
+        @if (result.Delta is not null)
+        {
+            <p><strong>Delta (meter1 − meter2):</strong> @result.Delta.Watts.ToString("N0") W</p>
+        }
+        <p><strong>Comparison:</strong> @result.Comparison</p>
+        <p>
+            <strong>Within ±@result.ToleranceWatts.ToString("0") W?</strong>
+            @(result.WithinTolerance ? "Yes: the two loads are balanced." : "No: the loads differ by more than the tolerance.")
+        </p>
+
+        <h3>Sub-Zone totals (sum of every meter with the + operator)</h3>
+        <table class="table">
+            <thead><tr><th>Sub-Zone</th><th>Meters</th><th>Total load</th></tr></thead>
+            <tbody>
+                @foreach (PowerMeterDto total in result.SubZoneTotals)
+                {
+                    <tr><td>@total.Name</td><td>@total.SourceCount</td><td>@((total.Watts / 1000).ToString("0.00")) kW</td></tr>
+                }
+            </tbody>
+        </table>
+    </section>
+}
+
+@code {
+    private PowerMeterDto[] meters = Array.Empty<PowerMeterDto>();
+    private MeterAggregationDto? result;
+    private string meterA = string.Empty;
+    private string meterB = string.Empty;
+    private double tolerance = 100;
+    private string? error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            meters = await Api.GetMetersAsync() ?? Array.Empty<PowerMeterDto>();
+            if (meters.Length > 0) meterA = meters[0].MeterId;
+            if (meters.Length > 1) meterB = meters[1].MeterId;
+            if (meters.Length > 0) await AggregateAsync();
+        }
+        catch (Exception ex)
+        {
+            error = $"The API could not be reached: {ex.Message}";
+        }
+    }
+
+    private async Task AggregateAsync()
+    {
+        ApiResult<MeterAggregationDto> response = await Api.AggregateMetersAsync(new[] { meterA, meterB }.Distinct(), tolerance);
+        if (response.Success)
+        {
+            result = response.Value;
+            error = null;
+        }
+        else
+        {
+            error = $"{response.Error} {string.Join(" ", response.Details)}";
+        }
+    }
+}

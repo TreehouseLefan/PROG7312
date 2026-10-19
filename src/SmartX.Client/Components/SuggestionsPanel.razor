@@ -1,0 +1,207 @@
+@inherits LiveComponent
+
+<section class="panel engine">
+    <div class="panel-head">
+        <h2>Suggested Actions</h2>
+        @if (Snapshot is EngineSnapshotDto s)
+        {
+            <span class="muted small" title="Share of operator actions the engine had already suggested">
+                hit rate @Percent(s.Stats.HitRate) · @s.Stats.RulesLearned rules · @s.Stats.ActionsObserved actions learned
+            </span>
+        }
+    </div>
+
+    @if (Snapshot is null || Snapshot.Suggestions.Length == 0)
+    {
+        <p class="muted small">
+            No suggestions right now. They appear when an active situation matches something operators have handled before,
+            or right after an action that is usually followed by another one. Try <em>Dry out Sub-Zone B</em> above.
+        </p>
+    }
+    else
+    {
+        <ul class="suggestions">
+            @foreach (SuggestionDto suggestion in Snapshot.Suggestions)
+            {
+                <li class="@("suggestion kind-" + suggestion.Kind.ToLowerInvariant())">
+                    <div class="suggestion-head">
+                        <span class="suggestion-icon">@Icon(suggestion.Kind)</span>
+                        <strong>@suggestion.Title</strong>
+                        <span class="tag">@suggestion.Source</span>
+                    </div>
+                    <div class="confidence" title="Confidence">
+                        <div class="confidence-fill" style="@Width(suggestion.Confidence)"></div>
+                        <span>@Percent(suggestion.Confidence)</span>
+                    </div>
+                    <p class="small muted">@suggestion.Reason</p>
+                    <div class="button-row">
+                        <button class="btn primary tiny" @onclick="() => ActAsync(suggestion)" disabled="@busy">@ActLabel(suggestion)</button>
+                        <button class="btn ghost tiny" @onclick="() => DismissAsync(suggestion)" disabled="@busy">Dismiss</button>
+                    </div>
+                </li>
+            }
+        </ul>
+    }
+
+    @if (message is not null)
+    {
+        <div class="@(messageOk ? "alert info" : "alert error")">@message</div>
+    }
+
+    <h2 class="sub-head">Automated Insights</h2>
+    @if (Snapshot is null || Snapshot.Insights.Length == 0)
+    {
+        <p class="muted small">Nothing needs attention. The engine is forecasting every soil and power sensor for threshold crossings.</p>
+    }
+    else
+    {
+        <ul class="insights">
+            @foreach (InsightDto insight in Snapshot.Insights)
+            {
+                <li class="@("insight-item sev-" + insight.Severity.ToLowerInvariant())">
+                    <div>
+                        <strong>@InsightIcon(insight.Severity) @insight.Title</strong>
+                        <div class="small muted">@insight.Detail</div>
+                    </div>
+                    @if (insight.DeviceMac is not null)
+                    {
+                        <button class="btn tiny ghost" @onclick="() => OnSelectDevice.InvokeAsync(insight.DeviceMac)">Inspect</button>
+                    }
+                </li>
+            }
+        </ul>
+    }
+
+    <button class="btn ghost tiny" @onclick="ToggleRulesAsync">@(rules is null ? "Show what the engine has learned" : "Hide learned rules")</button>
+    @if (rules is not null)
+    {
+        <div class="table-wrap">
+            <table class="table compact">
+                <thead><tr><th>Learned rule</th><th>Support</th><th>Confidence</th><th>Lift</th></tr></thead>
+                <tbody>
+                    @foreach (LearnedRuleDto rule in rules)
+                    {
+                        <tr>
+                            <td>@rule.Description</td>
+                            <td>@rule.Support.ToString("0.#")</td>
+                            <td>@Percent(rule.Confidence)</td>
+                            <td>×@rule.Lift.ToString("0.0")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        <p class="tiny-text muted">Support is recency-weighted (half-life 7 days). Confidence = P(action within 10 min | situation). Lift &gt; 1 means the situation makes the action more likely than usual.</p>
+    }
+</section>
+
+@code {
+    [Parameter] public EventCallback<string> OnSelectDevice { get; set; }
+    [Parameter] public EventCallback<string> OnRunSearch { get; set; }
+
+    private bool busy;
+    private string? message;
+    private bool messageOk;
+    private LearnedRuleDto[]? rules;
+
+    private EngineSnapshotDto? Snapshot => State.Engine;
+
+    private static string Percent(double value) => (value * 100).ToString("0", CultureInfo.InvariantCulture) + "%";
+
+    private static string Width(double value) =>
+        "width:" + Math.Clamp(value * 100, 2, 100).ToString("0.#", CultureInfo.InvariantCulture) + "%";
+
+    private static string Icon(string kind) => kind switch
+    {
+        "Command" => "⚡",
+        "Inspect" => "🔎",
+        _ => "⌕"
+    };
+
+    private static string InsightIcon(string severity) => severity switch
+    {
+        "Critical" => "⛔",
+        "Warning" => "⚠",
+        _ => "ℹ"
+    };
+
+    private static string ActLabel(SuggestionDto suggestion) => suggestion.Kind switch
+    {
+        "Command" => "Do it",
+        "Inspect" => "Open device",
+        _ => "Run search"
+    };
+
+    private async Task ActAsync(SuggestionDto suggestion)
+    {
+        busy = true;
+        message = null;
+
+        try
+        {
+            if (suggestion.Kind == "Command" && suggestion.Command is CommandAction action)
+            {
+                string? scope = null;
+                if (action is CommandAction.CloseAllValves or CommandAction.OpenAllValves)
+                {
+                    string target = suggestion.ActionKey[(suggestion.ActionKey.LastIndexOf(':') + 1)..];
+                    scope = target == "all" ? null : target;
+                }
+
+                ApiResult<CommandResultDto> result = await Api.IssueCommandAsync(
+                    new IssueCommandRequest(action, suggestion.DeviceMac, scope, State.OperatorName, suggestion.Id));
+
+                if (result.Success && result.Value is CommandResultDto done)
+                {
+                    State.ApplyCommandResult(done);
+                    Show(true, done.Message);
+                }
+                else
+                {
+                    Show(false, result.Error);
+                }
+            }
+            else
+            {
+                ApiResult<SuggestionDto> accepted = await Api.AcceptSuggestionAsync(suggestion.Id);
+                if (!accepted.Success)
+                {
+                    Show(false, accepted.Error);
+                    return;
+                }
+
+                if (suggestion.Kind == "Inspect" && suggestion.DeviceMac is not null)
+                {
+                    await OnSelectDevice.InvokeAsync(suggestion.DeviceMac);
+                }
+                else if (suggestion.Query is not null)
+                {
+                    await OnRunSearch.InvokeAsync(suggestion.Query);
+                }
+            }
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task DismissAsync(SuggestionDto suggestion)
+    {
+        busy = true;
+        bool ok = await Api.DismissSuggestionAsync(suggestion.Id);
+        busy = false;
+        Show(ok, ok ? $"Dismissed “{suggestion.Title}” for 10 minutes." : "That suggestion has already changed.");
+    }
+
+    private async Task ToggleRulesAsync()
+    {
+        rules = rules is null ? await Api.GetRulesAsync(15) ?? Array.Empty<LearnedRuleDto>() : null;
+    }
+
+    private void Show(bool ok, string? text)
+    {
+        messageOk = ok;
+        message = text;
+    }
+}

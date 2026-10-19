@@ -1,0 +1,262 @@
+@page "/telemetry/diagnostics"
+@inject SmartXApiClient Api
+
+<PageTitle>Diagnostics · Smart-X</PageTitle>
+
+<h1>Diagnostics lab</h1>
+<p class="muted">Evidence for the performance requirements: no boxing, jagged-array batches and multi-dimensional history.</p>
+
+@if (error is not null)
+{
+    <div class="alert error">@error</div>
+}
+
+<div class="two-col">
+    <section class="panel">
+        <h2>Generics vs boxing</h2>
+        <label class="field">
+            <span>Readings</span>
+            <input type="number" @bind="boxingCount" />
+        </label>
+        <button class="btn primary" @onclick="RunBoxingAsync">Run comparison</button>
+        @if (boxing is not null)
+        {
+            <p>@boxing.Summary</p>
+            <div class="bars">
+                <div class="bar-row">
+                    <span>RingBuffer&lt;float&gt;</span>
+                    <div class="bar"><div class="bar-fill good" style="@Width(boxing.GenericBytes)"></div></div>
+                    <span>@boxing.GenericBytes.ToString("N0") B · @boxing.GenericMilliseconds.ToString("0.0") ms</span>
+                </div>
+                <div class="bar-row">
+                    <span>List&lt;object&gt; (boxed)</span>
+                    <div class="bar"><div class="bar-fill bad" style="@Width(boxing.BoxedBytes)"></div></div>
+                    <span>@boxing.BoxedBytes.ToString("N0") B · @boxing.BoxedMilliseconds.ToString("0.0") ms</span>
+                </div>
+            </div>
+        }
+    </section>
+
+    <section class="panel">
+        <h2>Jagged batch processing</h2>
+        <div class="field-row">
+            <label class="field"><span>Devices</span><input type="number" @bind="demoDevices" /></label>
+            <label class="field"><span>Batches each</span><input type="number" @bind="demoBatches" /></label>
+            <label class="field"><span>Max readings / batch</span><input type="number" @bind="demoReadings" /></label>
+        </div>
+        <button class="btn primary" @onclick="RunBatchAsync">Process batches</button>
+        @if (batch is not null)
+        {
+            <div class="kv">
+                <span>Readings flattened</span><strong>@batch.TotalReadings.ToString("N0")</strong>
+                <span>Elapsed</span><strong>@batch.ElapsedMilliseconds.ToString("0.00") ms</strong>
+                <span>List capacity (pre-sized)</span><strong>@batch.ListCapacity.ToString("N0")</strong>
+                <span>Allocated</span><strong>@((batch.AllocatedBytes / 1024.0).ToString("N0")) KB</strong>
+                <span>Matrix</span><strong>@batch.MatrixRows × @batch.MatrixColumns (double[,])</strong>
+            </div>
+            <table class="table compact">
+                <thead><tr><th>Batch</th><th>Count</th><th>Min</th><th>Max</th><th>Mean</th></tr></thead>
+                <tbody>
+                    @foreach (BatchSummaryDto summary in batch.SampleSummaries)
+                    {
+                        <tr><td>@summary.BatchIndex</td><td>@summary.Count</td><td>@summary.Min</td><td>@summary.Max</td><td>@summary.Mean</td></tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+</div>
+
+<section class="panel">
+    <h2>Dictionary lookup vs list scan (Part 2)</h2>
+    <p class="muted small">
+        Devices are keyed by <code>MacKey</code>, the 48-bit MAC address as a number with a mixed hash. This compares
+        <code>Dictionary&lt;MacKey, T&gt;</code> lookups with scanning a list, and counts hash collisions against a naive hash
+        that keeps only the low 32 bits of the address.
+    </p>
+    <div class="field-row">
+        <label class="field"><span>Devices</span><input type="number" @bind="lookupDevices" /></label>
+        <label class="field"><span>Lookups</span><input type="number" @bind="lookupCount" /></label>
+    </div>
+    <button class="btn primary" @onclick="RunLookupAsync">Run lookup benchmark</button>
+    @if (lookup is not null)
+    {
+        <p>@lookup.Summary</p>
+        <div class="bars">
+            <div class="bar-row">
+                <span>Dictionary (O(1))</span>
+                <div class="bar"><div class="bar-fill good" style="@LookupWidth(lookup.DictionaryMs)"></div></div>
+                <span>@lookup.DictionaryMs.ToString("0.###") ms</span>
+            </div>
+            <div class="bar-row">
+                <span>List scan (O(n))</span>
+                <div class="bar"><div class="bar-fill bad" style="@LookupWidth(lookup.ListScanMs)"></div></div>
+                <span>@lookup.ListScanMs.ToString("0.###") ms</span>
+            </div>
+        </div>
+        <div class="kv">
+            <span>MacKey hash collisions</span><strong>@lookup.HashCollisions.ToString("N0")</strong>
+            <span>Naive low-32-bit hash collisions</span><strong>@lookup.NaiveHashCollisions.ToString("N0")</strong>
+            <span>Speed-up</span><strong>@lookup.Speedup.ToString("0")×</strong>
+        </div>
+    }
+</section>
+
+<section class="panel">
+    <h2>Sub-Zone history matrix (device × time slot)</h2>
+    <div class="field-row">
+        <label class="field">
+            <span>Sub-Zone</span>
+            <select @bind="subZoneId">
+                @foreach (LocationOptionDto location in locations)
+                {
+                    <option value="@location.SubZoneId">@location.Label</option>
+                }
+            </select>
+        </label>
+        <label class="field"><span>Slots</span><input type="number" @bind="slots" /></label>
+    </div>
+    <button class="btn primary" @onclick="LoadMatrixAsync">Build heatmap</button>
+    @if (matrix is not null)
+    {
+        <p class="muted small">Cells show the average reading per slot; colour shows how far it sits from that device's own mean (z-score).</p>
+        <div class="table-wrap">
+            <table class="heatmap">
+                <thead>
+                    <tr>
+                        <th>Device</th>
+                        @for (int c = 0; c < matrix.Slots; c++)
+                        {
+                            <th>@(c + 1)</th>
+                        }
+                    </tr>
+                </thead>
+                <tbody>
+                    @for (int r = 0; r < matrix.RowLabels.Length; r++)
+                    {
+                        int row = r;
+                        <tr>
+                            <th>@matrix.RowLabels[row]</th>
+                            @for (int c = 0; c < matrix.Slots; c++)
+                            {
+                                int col = c;
+                                <td style="@CellStyle(matrix.Deviation[row][col])">@(matrix.Cells[row][col]?.ToString("0.#") ?? "–")</td>
+                            }
+                        </tr>
+                    }
+                    <tr class="avg-row">
+                        <th>Sub-Zone deviation</th>
+                        @for (int c = 0; c < matrix.Slots; c++)
+                        {
+                            int col = c;
+                            <td style="@CellStyle(matrix.ColumnDeviation[col])">@(matrix.ColumnDeviation[col]?.ToString("0.00") ?? "–")</td>
+                        }
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+@code {
+    private BoxingReportDto? boxing;
+    private BatchDemoDto? batch;
+    private HistoryMatrixDto? matrix;
+    private LocationOptionDto[] locations = Array.Empty<LocationOptionDto>();
+    private int boxingCount = 200_000;
+    private int demoDevices = 50;
+    private int demoBatches = 20;
+    private int demoReadings = 120;
+    private string subZoneId = "sz-a";
+    private int slots = 12;
+    private string? error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            locations = await Api.GetLocationsAsync() ?? Array.Empty<LocationOptionDto>();
+            if (locations.Length > 0) subZoneId = locations[0].SubZoneId;
+        }
+        catch (Exception ex)
+        {
+            error = $"The API could not be reached: {ex.Message}";
+        }
+    }
+
+    private async Task RunBoxingAsync()
+    {
+        try
+        {
+            boxing = await Api.RunBoxingComparisonAsync(boxingCount);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+
+    private async Task RunBatchAsync()
+    {
+        ApiResult<BatchDemoDto> result = await Api.RunBatchDemoAsync(demoDevices, demoBatches, demoReadings);
+        if (result.Success) batch = result.Value;
+        else error = result.Error;
+    }
+
+    private async Task LoadMatrixAsync()
+    {
+        ApiResult<HistoryMatrixDto> result = await Api.GetHistoryMatrixAsync(subZoneId, slots);
+        if (result.Success)
+        {
+            matrix = result.Value;
+            error = null;
+        }
+        else
+        {
+            matrix = null;
+            error = $"{result.Error} {string.Join(" ", result.Details)}";
+        }
+    }
+
+    private LookupBenchmarkDto? lookup;
+    private int lookupDevices = 10_000;
+    private int lookupCount = 5_000;
+
+    private async Task RunLookupAsync()
+    {
+        try
+        {
+            lookup = await Api.RunLookupBenchmarkAsync(lookupDevices, lookupCount);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+
+    private string LookupWidth(double ms)
+    {
+        if (lookup is null) return "width:0%";
+        double max = Math.Max(1e-6, Math.Max(lookup.DictionaryMs, lookup.ListScanMs));
+        double percent = Math.Max(1, ms * 100.0 / max);
+        return "width:" + percent.ToString("0.#", CultureInfo.InvariantCulture) + "%";
+    }
+
+    private string Width(long bytes)
+    {
+        if (boxing is null) return "width:0%";
+        long max = Math.Max(1, Math.Max(boxing.GenericBytes, boxing.BoxedBytes));
+        double percent = Math.Max(1, bytes * 100.0 / max);
+        return "width:" + percent.ToString("0.#", CultureInfo.InvariantCulture) + "%";
+    }
+
+    private static string CellStyle(double? z)
+    {
+        if (z is not double value) return "background:transparent";
+        double clamped = Math.Clamp(value, -3, 3);
+        // Blue for below the mean, orange for above; stronger colour = larger deviation.
+        string hue = clamped >= 0 ? "28" : "205";
+        double alpha = Math.Abs(clamped) / 3 * 0.85;
+        return $"background:hsla({hue},85%,50%,{alpha.ToString("0.00", CultureInfo.InvariantCulture)})";
+    }
+}

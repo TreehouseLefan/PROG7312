@@ -1,0 +1,29 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: src/SmartX.Api/Dockerfile
+    container_name: smartx-api
+    ports:
+      - "5100:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Cors__AllowedOrigins__0: http://localhost:8080
+      Cors__AllowedOrigins__1: http://localhost:5200
+    volumes:
+      - smartx-data:/app/App_Data
+    restart: unless-stopped
+
+  client:
+    build:
+      context: .
+      dockerfile: src/SmartX.Client/Dockerfile
+    container_name: smartx-client
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  smartx-data:

@@ -1,0 +1,47 @@
+<button type="button" class="@CssClass" style="@OpacityStyle" title="@Tooltip" @onclick="Select">
+    <span class="glyph" aria-hidden="true">@Glyph</span>
+    <span class="tile-value">@ValueText</span>
+    <span class="tile-name">@ShortName</span>
+    <span class="sr-only">@Tile.State</span>
+</button>
+
+@code {
+    [Parameter, EditorRequired] public PulseTileDto Tile { get; set; } = default!;
+    [Parameter] public bool Pulse { get; set; }
+    [Parameter] public EventCallback<PulseTileDto> OnSelect { get; set; }
+
+    private string CssClass
+    {
+        get
+        {
+            string css = "tile state-" + Tile.State.ToString().ToLowerInvariant();
+            if (Pulse) css += " pulse";
+            if (Tile.Acknowledged) css += " acked";
+            return css;
+        }
+    }
+
+    private string Glyph => Tile.State switch
+    {
+        PulseState.Healthy => "●",
+        PulseState.Spike => "▲",
+        PulseState.Fading => "◌",
+        PulseState.Offline => "✕",
+        _ => "…"
+    };
+
+    private string OpacityStyle => Tile.State == PulseState.Fading
+        ? "opacity:" + Math.Clamp(1 - (Tile.Phi / 10), 0.35, 0.9).ToString("0.00", CultureInfo.InvariantCulture)
+        : string.Empty;
+
+    private string ValueText => Tile.Category == SensorCategory.Actuator
+        ? (Tile.LastValue >= 0.5 ? "ON" : "OFF")
+        : Tile.LastValue.ToString("0.#", CultureInfo.InvariantCulture) + Tile.Unit;
+
+    private string ShortName => Tile.Name.Length > 18 ? Tile.Name[..18] + "…" : Tile.Name;
+
+    private string Tooltip =>
+        $"{Tile.Name} ({Tile.Mac})\nState: {Tile.State}\nValue: {ValueText}\nz = {Tile.ZScore:0.00}   φ = {Tile.Phi:0.00}";
+
+    private Task Select() => OnSelect.InvokeAsync(Tile);
+}

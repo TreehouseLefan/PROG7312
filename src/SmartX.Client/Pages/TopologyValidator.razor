@@ -1,0 +1,178 @@
+@page "/telemetry/topology"
+@inject SmartXApiClient Api
+
+<PageTitle>Topology validator · Smart-X</PageTitle>
+
+<h1>Deployment tree validator</h1>
+<p class="muted">
+    A recursive algorithm walks Facility → Zone → Sub-Zone → Node, merging each branch's configuration profile
+    with its ancestors and reporting every unsafe placement.
+</p>
+
+@if (error is not null)
+{
+    <div class="alert error">@error</div>
+}
+
+<div class="button-row">
+    <button class="btn primary" @onclick="LoadLiveAsync">Validate live topology</button>
+    <button class="btn" @onclick="LoadBrokenAsync">Load a broken sample</button>
+    <button class="btn ghost" @onclick="ValidateEditedAsync">Validate the JSON below</button>
+</div>
+
+<div class="two-col">
+    <section class="panel">
+        <h2>@(showingSample ? "Broken sample tree" : "Live tree")</h2>
+        <ul class="tree">
+            @foreach (DeploymentNode root in roots)
+            {
+                <TreeNodeView Node="root" IssueNodeIds="issueIds" OnNodeSelected="SelectNodeAsync" />
+            }
+        </ul>
+        <p class="muted small">Click a node to run the single-node placement check.</p>
+    </section>
+
+    <section class="panel">
+        <h2>Validation result</h2>
+        @if (result is not null)
+        {
+            <p class="@(result.IsValid ? "status ok" : "status bad")">
+                @(result.IsValid ? "✓ Tree is valid" : "✕ Tree has errors") ·
+                @result.NodesChecked nodes · @result.DevicesChecked devices ·
+                @result.ErrorCount errors · @result.WarningCount warnings
+            </p>
+            <ul class="checks">
+                @foreach (ValidationIssueDto issue in result.Issues)
+                {
+                    <li class="@("issue " + issue.Severity.ToLowerInvariant())">
+                        <strong>@issue.Severity</strong> <span class="muted">@issue.Path</span><br />@issue.Message
+                    </li>
+                }
+            </ul>
+        }
+
+        @if (placement is not null)
+        {
+            <h2>Placement of @placement.NodeId</h2>
+            <p class="@(placement.IsSafe ? "status ok" : "status bad")">@(placement.IsSafe ? "✓ Safely configured" : "✕ Unsafe")</p>
+            <p class="chain">@placement.Chain</p>
+            <ul class="checks">
+                @foreach (string check in placement.Checks)
+                {
+                    <li>@check</li>
+                }
+                @foreach (ValidationIssueDto issue in placement.Issues)
+                {
+                    <li class="@("issue " + issue.Severity.ToLowerInvariant())">@issue.Message</li>
+                }
+            </ul>
+        }
+    </section>
+</div>
+
+<section class="panel">
+    <h2>Edit and re-validate (JSON)</h2>
+    <textarea class="code" rows="16" @bind="json"></textarea>
+</section>
+
+@code {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+
+    private List<DeploymentNode> roots = new();
+    private TopologyValidationResultDto? result;
+    private PlacementResultDto? placement;
+    private HashSet<string> issueIds = new(StringComparer.OrdinalIgnoreCase);
+    private string json = "[]";
+    private bool showingSample;
+    private string? error;
+
+    protected override Task OnInitializedAsync() => LoadLiveAsync();
+
+    private async Task LoadLiveAsync()
+    {
+        try
+        {
+            showingSample = false;
+            placement = null;
+            roots = await Api.GetTopologyAsync() ?? new List<DeploymentNode>();
+            json = JsonSerializer.Serialize(roots, JsonOptions);
+            SetResult(await Api.ValidateLiveTopologyAsync());
+            error = null;
+        }
+        catch (Exception ex)
+        {
+            error = $"The API could not be reached: {ex.Message}";
+        }
+    }
+
+    private async Task LoadBrokenAsync()
+    {
+        try
+        {
+            showingSample = true;
+            placement = null;
+            roots = await Api.GetBrokenSampleAsync() ?? new List<DeploymentNode>();
+            json = JsonSerializer.Serialize(roots, JsonOptions);
+            await ValidateRootsAsync(roots);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+
+    private async Task ValidateEditedAsync()
+    {
+        try
+        {
+            List<DeploymentNode> edited = JsonSerializer.Deserialize<List<DeploymentNode>>(json, JsonOptions) ?? new List<DeploymentNode>();
+            roots = edited;
+            showingSample = true;
+            placement = null;
+            await ValidateRootsAsync(edited);
+        }
+        catch (JsonException ex)
+        {
+            error = $"The JSON is not valid: {ex.Message}";
+        }
+    }
+
+    private async Task ValidateRootsAsync(List<DeploymentNode> tree)
+    {
+        ApiResult<TopologyValidationResultDto> response = await Api.ValidateTreeAsync(tree);
+        if (response.Success)
+        {
+            SetResult(response.Value);
+            error = null;
+        }
+        else
+        {
+            error = $"{response.Error} {string.Join(" ", response.Details)}";
+        }
+    }
+
+    private void SetResult(TopologyValidationResultDto? value)
+    {
+        result = value;
+        issueIds = new HashSet<string>(
+            (value?.Issues ?? Array.Empty<ValidationIssueDto>()).Select(i => i.NodeId),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task SelectNodeAsync(DeploymentNode node)
+    {
+        if (showingSample)
+        {
+            return; // placement checks run against the live tree only
+        }
+
+        try
+        {
+            placement = await Api.GetNodePlacementAsync(node.Id);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+}

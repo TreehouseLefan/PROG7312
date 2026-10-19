@@ -1,0 +1,19 @@
+<div class="@("conn conn-" + State.ToString().ToLowerInvariant())">
+    <span class="conn-dot"></span>
+    <span>@Text</span>
+</div>
+
+@code {
+    [Parameter] public HubConnectionState State { get; set; }
+    [Parameter] public DateTime? LastBatchUtc { get; set; }
+
+    private string Text => State switch
+    {
+        HubConnectionState.Connected => LastBatchUtc is DateTime last
+            ? $"Live · last pulse {Math.Max(0, (DateTime.UtcNow - last).TotalSeconds):0}s ago"
+            : "Live",
+        HubConnectionState.Connecting => "Connecting…",
+        HubConnectionState.Reconnecting => "Reconnecting…",
+        _ => "Offline (polling disabled)"
+    };
+}
