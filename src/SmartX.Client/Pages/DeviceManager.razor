@@ -1,0 +1,333 @@
+@page "/telemetry/devices"
+@inject SmartXApiClient Api
+
+<PageTitle>Devices · Smart-X</PageTitle>
+
+<h1>Sensor Payload Management</h1>
+<p class="muted">Register ESP32-class devices, choose where they are deployed, and push manual readings through the validation gateway.</p>
+
+@if (error is not null)
+{
+    <div class="alert error">@error</div>
+}
+
+<div class="two-col">
+    <section class="panel">
+        <h2>Register a device</h2>
+        <EditForm Model="form" OnValidSubmit="RegisterAsync">
+            <DataAnnotationsValidator />
+
+            <label class="field">
+                <span>MAC address (unique identifier)</span>
+                <div class="inline">
+                    <InputText @bind-Value="form.MacAddress" placeholder="24:0A:C4:12:34:56" />
+                    <button type="button" class="btn ghost" @onclick="GenerateMac">Random</button>
+                </div>
+                <ValidationMessage For="() => form.MacAddress" />
+            </label>
+
+            <label class="field">
+                <span>Display name</span>
+                <InputText @bind-Value="form.DisplayName" placeholder="A-09 Soil Moisture" />
+                <ValidationMessage For="() => form.DisplayName" />
+            </label>
+
+            <label class="field">
+                <span>Sensor category</span>
+                <InputSelect @bind-Value="form.Category" @bind-Value:after="OnCategoryChanged">
+                    @foreach (SensorCategory category in Enum.GetValues<SensorCategory>())
+                    {
+                        <option value="@category">@category</option>
+                    }
+                </InputSelect>
+            </label>
+
+            <label class="field">
+                <span>Metric</span>
+                <InputSelect @bind-Value="form.Metric" @bind-Value:after="OnMetricChanged">
+                    @foreach (MetricPreset preset in PresetsFor(form.Category))
+                    {
+                        <option value="@preset.Metric">@preset.Label</option>
+                    }
+                </InputSelect>
+            </label>
+
+            <label class="field">
+                <span>Deployment location (Facility › Zone › Sub-Zone)</span>
+                <InputSelect @bind-Value="form.SubZoneId">
+                    <option value="">Choose a Sub-Zone…</option>
+                    @foreach (LocationOptionDto location in locations)
+                    {
+                        <option value="@location.SubZoneId">@location.Label · report within @(location.MaxSampleIntervalSeconds)s</option>
+                    }
+                </InputSelect>
+                <ValidationMessage For="() => form.SubZoneId" />
+            </label>
+
+            <div class="field-row">
+                <label class="field">
+                    <span>Room / node label</span>
+                    <InputText @bind-Value="form.Room" placeholder="Bed 5" />
+                </label>
+                <label class="field">
+                    <span>Reporting interval (s)</span>
+                    <InputNumber @bind-Value="form.ExpectedIntervalSeconds" />
+                    <ValidationMessage For="() => form.ExpectedIntervalSeconds" />
+                </label>
+            </div>
+
+            @if (form.Category != SensorCategory.Actuator)
+            {
+                <div class="field-row">
+                    <label class="field"><span>Unit</span><InputText @bind-Value="form.Unit" /></label>
+                    <label class="field"><span>Min plausible</span><InputNumber @bind-Value="form.MinValue" /></label>
+                    <label class="field"><span>Max plausible</span><InputNumber @bind-Value="form.MaxValue" /></label>
+                </div>
+            }
+
+            <label class="check">
+                <InputCheckbox @bind-Value="form.SimulateTelemetry" />
+                <span>Let the simulator publish readings for this device</span>
+            </label>
+
+            <ValidationSummary />
+            <button type="submit" class="btn primary" disabled="@busy">@(busy ? "Registering…" : "Register device")</button>
+        </EditForm>
+
+        @if (registerErrors.Count > 0)
+        {
+            <div class="alert error">
+                <strong>@registerTitle</strong>
+                <ul>
+                    @foreach (string detail in registerErrors)
+                    {
+                        <li>@detail</li>
+                    }
+                </ul>
+            </div>
+        }
+        @if (registered is not null)
+        {
+            <div class="alert info">
+                Registered <strong>@registered.DisplayName</strong> in @registered.Location.SubZoneName.
+                <a href="@($"telemetry/devices/{MacAddress.ToSlug(registered.MacAddress)}")">Open its drill-down →</a>
+            </div>
+        }
+    </section>
+
+    <section class="panel">
+        <h2>Send a manual reading</h2>
+        <p class="muted small">Try an out-of-range value (e.g. 250 for soil moisture) to watch the gateway reject it.</p>
+        <label class="field">
+            <span>Device</span>
+            <select @bind="manualMac">
+                <option value="">Choose a device…</option>
+                @foreach (SensorDeviceDto device in devices)
+                {
+                    <option value="@device.MacAddress">@device.DisplayName (@device.ValueKind.ToWireName())</option>
+                }
+            </select>
+        </label>
+        <label class="field">
+            <span>Value (number, or true / false for actuators)</span>
+            <input @bind="manualValue" placeholder="42.5" />
+        </label>
+        <button class="btn" @onclick="SendManualAsync" disabled="@(string.IsNullOrWhiteSpace(manualMac))">Send reading</button>
+        @if (manualResult is not null)
+        {
+            <div class="@(manualOk ? "alert info" : "alert error")">@manualResult</div>
+        }
+    </section>
+</div>
+
+<section class="panel">
+    <h2>Registered devices (@devices.Length)</h2>
+    <div class="table-wrap">
+        <table class="table">
+            <thead>
+                <tr><th>Name</th><th>MAC</th><th>Category</th><th>Payload</th><th>Location</th><th>Every</th><th>Files</th><th></th></tr>
+            </thead>
+            <tbody>
+                @foreach (SensorDeviceDto device in devices)
+                {
+                    <tr>
+                        <td>@device.DisplayName</td>
+                        <td><code>@device.MacAddress</code></td>
+                        <td>@device.Category</td>
+                        <td>@device.ValueKind.ToWireName()</td>
+                        <td>@device.Location.FacilityName › @device.Location.ZoneName › @device.Location.SubZoneName</td>
+                        <td>@(device.ExpectedIntervalSeconds)s</td>
+                        <td>@device.AttachmentCount</td>
+                        <td><a href="@($"telemetry/devices/{MacAddress.ToSlug(device.MacAddress)}")">Open</a></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</section>
+
+@code {
+    private sealed record MetricPreset(string Metric, string Label, string Unit, double? Min, double? Max);
+
+    private static readonly MetricPreset[] EnvironmentalPresets =
+    {
+        new("soil_moisture", "Soil moisture (%)", "%", 0, 100),
+        new("air_temperature", "Air temperature (°C)", "°C", -10, 60),
+        new("humidity", "Relative humidity (%)", "%", 0, 100)
+    };
+
+    private static readonly MetricPreset[] PowerPresets = { new("power_draw", "Power draw (W)", "W", 0, 15000) };
+
+    private static readonly MetricPreset[] ActuatorPresets =
+    {
+        new("valve_state", "Valve open / closed", "", null, null),
+        new("switch_state", "Smart switch on / off", "", null, null),
+        new("pump_relay", "Pump relay on / off", "", null, null)
+    };
+
+    private RegisterDeviceRequest form = NewForm();
+    private LocationOptionDto[] locations = Array.Empty<LocationOptionDto>();
+    private SensorDeviceDto[] devices = Array.Empty<SensorDeviceDto>();
+    private SensorDeviceDto? registered;
+    private List<string> registerErrors = new();
+    private string? registerTitle;
+    private string? error;
+    private bool busy;
+    private string manualMac = string.Empty;
+    private string manualValue = string.Empty;
+    private string? manualResult;
+    private bool manualOk;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            locations = await Api.GetLocationsAsync() ?? Array.Empty<LocationOptionDto>();
+            await LoadDevicesAsync();
+        }
+        catch (Exception ex)
+        {
+            error = $"The API could not be reached: {ex.Message}";
+        }
+    }
+
+    private async Task LoadDevicesAsync() => devices = await Api.GetDevicesAsync() ?? Array.Empty<SensorDeviceDto>();
+
+    private static RegisterDeviceRequest NewForm() => new()
+    {
+        MacAddress = MacAddress.CreateRandom(Random.Shared),
+        Category = SensorCategory.Environmental,
+        Metric = "soil_moisture",
+        Unit = "%",
+        MinValue = 0,
+        MaxValue = 100,
+        ExpectedIntervalSeconds = 2,
+        SimulateTelemetry = true
+    };
+
+    private static MetricPreset[] PresetsFor(SensorCategory category) => category switch
+    {
+        SensorCategory.PowerConsumption => PowerPresets,
+        SensorCategory.Actuator => ActuatorPresets,
+        _ => EnvironmentalPresets
+    };
+
+    private void GenerateMac() => form.MacAddress = MacAddress.CreateRandom(Random.Shared);
+
+    private void OnCategoryChanged()
+    {
+        MetricPreset preset = PresetsFor(form.Category)[0];
+        form.Metric = preset.Metric;
+        ApplyPreset(preset);
+        form.ExpectedIntervalSeconds = form.Category switch
+        {
+            SensorCategory.PowerConsumption => 3,
+            SensorCategory.Actuator => 5,
+            _ => 2
+        };
+    }
+
+    private void OnMetricChanged()
+    {
+        MetricPreset? preset = PresetsFor(form.Category).FirstOrDefault(p => p.Metric == form.Metric);
+        if (preset is not null)
+        {
+            ApplyPreset(preset);
+        }
+    }
+
+    private void ApplyPreset(MetricPreset preset)
+    {
+        form.Unit = preset.Unit;
+        form.MinValue = preset.Min;
+        form.MaxValue = preset.Max;
+    }
+
+    private async Task RegisterAsync()
+    {
+        busy = true;
+        registerErrors.Clear();
+        registered = null;
+
+        try
+        {
+            if (form.Category == SensorCategory.Actuator)
+            {
+                form.MinValue = null;
+                form.MaxValue = null;
+            }
+
+            ApiResult<SensorDeviceDto> result = await Api.RegisterDeviceAsync(form);
+            if (result.Success && result.Value is not null)
+            {
+                registered = result.Value;
+                form = NewForm();
+                await LoadDevicesAsync();
+                locations = await Api.GetLocationsAsync() ?? locations;
+            }
+            else
+            {
+                registerTitle = result.Error;
+                registerErrors = result.Details.Count > 0 ? result.Details.ToList() : new List<string> { result.Error ?? "Registration failed." };
+            }
+        }
+        catch (Exception ex)
+        {
+            registerTitle = "Registration failed";
+            registerErrors = new List<string> { ex.Message };
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task SendManualAsync()
+    {
+        SensorDeviceDto? device = devices.FirstOrDefault(d => d.MacAddress == manualMac);
+        if (device is null)
+        {
+            return;
+        }
+
+        JsonElement value;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(string.IsNullOrWhiteSpace(manualValue) ? "null" : manualValue.Trim().ToLowerInvariant());
+            value = document.RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            manualOk = false;
+            manualResult = "Enter a number, true or false.";
+            return;
+        }
+
+        var request = new TelemetryIngestRequest(device.MacAddress, device.ValueKind.ToWireName(), value, null);
+        ApiResult<TelemetryIngestResult> result = await Api.SendReadingAsync(request);
+        manualOk = result.Success;
+        manualResult = result.Success && result.Value is not null
+            ? $"Accepted: {result.Value.Value} → queued on the {result.Value.Lane} lane (#{result.Value.Sequence}){(result.Value.PriorityReason is null ? "" : " — " + result.Value.PriorityReason)}."
+            : $"{result.Error}: {string.Join(" ", result.Details)}";
+    }
+}
