@@ -1,0 +1,265 @@
+@inherits LiveComponent
+@* Historical log for one sensor, served by the API's augmented AVL tree (range query, O(log n) summary, paging by rank). *@
+
+<section class="panel" id="history">
+    <div class="panel-head">
+        <h2>Sensor history (AVL tree)</h2>
+        @if (Ui.HistoryResult is HistoryPageDto r && r.OldestAvailable is DateTimeOffset oldest)
+        {
+            <span class="small muted">Stored: @oldest.ToLocalTime().ToString("dd MMM HH:mm") → @(r.NewestAvailable?.ToLocalTime().ToString("dd MMM HH:mm"))</span>
+        }
+    </div>
+
+    <div class="filter-row history-controls">
+        <label class="field">
+            <span>Sensor</span>
+            <select value="@Ui.HistoryMac" @onchange="SelectSensorAsync">
+                <option value="">Choose a sensor…</option>
+                @foreach (MeshNodeDto node in Sensors)
+                {
+                    <option value="@node.Mac">@node.Name · @node.Mac</option>
+                }
+            </select>
+        </label>
+
+        <div class="field">
+            <span>Range</span>
+            <div class="segmented" role="group" aria-label="Time range">
+                @foreach (var preset in Presets)
+                {
+                    <button class="@(Ui.HistoryPreset == preset.Key ? "seg active" : "seg")" @onclick="() => SetPresetAsync(preset.Key)">@preset.Label</button>
+                }
+            </div>
+        </div>
+    </div>
+
+    @if (Ui.HistoryPreset == "custom")
+    {
+        <div class="filter-row">
+            <label class="field narrow-field"><span>Date</span><input type="date" @bind="Ui.HistoryDate" /></label>
+            <label class="field narrow-field"><span>From</span><input type="time" @bind="Ui.HistoryFromTime" /></label>
+            <label class="field narrow-field"><span>To</span><input type="time" @bind="Ui.HistoryToTime" /></label>
+            <div class="field narrow-field"><span>&nbsp;</span><button class="btn primary" @onclick="() => LoadAsync(0)">Run range query</button></div>
+        </div>
+        <p class="tiny-text muted">Example from the brief: moisture readings between 14:00 and 16:00 for one node. Times are in your browser's time zone.</p>
+    }
+
+    @if (error is not null)
+    {
+        <div class="alert error">@error</div>
+    }
+
+    @if (Ui.HistoryResult is HistoryPageDto hp)
+    {
+        <div class="stat-strip">
+            <div class="stat"><span class="stat-value">@hp.Summary.Count.ToString("N0")</span><span class="stat-label">readings in range</span></div>
+            <div class="stat"><span class="stat-value">@Fmt(hp.Summary.Min)</span><span class="stat-label">min @hp.Unit</span></div>
+            <div class="stat"><span class="stat-value">@Fmt(hp.Summary.Mean)</span><span class="stat-label">mean @hp.Unit</span></div>
+            <div class="stat"><span class="stat-value">@Fmt(hp.Summary.Max)</span><span class="stat-label">max @hp.Unit</span></div>
+            <div class="stat" title="Nodes the AVL tree touched to answer the page, the summary and the chart, versus scanning every stored reading">
+                <span class="stat-value">@(hp.Stats.PageNodesVisited + hp.Stats.SummaryNodesVisited + hp.Stats.ChartNodesVisited)</span>
+                <span class="stat-label">tree nodes visited vs @hp.Stats.LinearScanComparisons.ToString("N0") for a list scan</span>
+            </div>
+            <div class="stat"><span class="stat-value">@hp.Stats.ElapsedMicroseconds.ToString("0") µs</span><span class="stat-label">server query time</span></div>
+        </div>
+
+        <p class="tiny-text muted">
+            AVL tree: @hp.Stats.TreeSize.ToString("N0") readings, height @hp.Stats.TreeHeight (guaranteed ≤ @hp.Stats.MaxAvlHeight; a sorted list
+            inserted into a plain BST would have height @hp.Stats.TreeSize.ToString("N0")), @hp.Stats.Rotations.ToString("N0") rotations so far.
+            Page: @hp.Stats.PageNodesVisited nodes · summary: @hp.Stats.SummaryNodesVisited · chart (@hp.Buckets.Length buckets): @hp.Stats.ChartNodesVisited.
+        </p>
+
+        @if (hp.Buckets.Any(b => b.Count > 0))
+        {
+            <HistoryBucketChart Page="hp" />
+        }
+
+        <div class="panel-head sub-head">
+            <h3>@hp.Name · @hp.Metric</h3>
+            <div class="button-row">
+                <button class="btn tiny" @onclick="ToggleOrderAsync">@(hp.Descending ? "Newest first ↓" : "Oldest first ↑")</button>
+                <select class="tiny-select" value="@Ui.HistoryPageSize" @onchange="SetPageSizeAsync" aria-label="Rows per page">
+                    @foreach (int size in new[] { 10, 25, 50, 100 })
+                    {
+                        <option value="@size">@size rows</option>
+                    }
+                </select>
+            </div>
+        </div>
+
+        @if (hp.Items.Length == 0)
+        {
+            <p class="muted small">No readings in this range.</p>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table class="table compact">
+                    <thead><tr><th>#</th><th>Time</th><th>Value</th></tr></thead>
+                    <tbody>
+                        @for (int i = 0; i < hp.Items.Length; i++)
+                        {
+                            HistoryItemDto item = hp.Items[i];
+                            <tr>
+                                <td class="muted">@(hp.Page * hp.PageSize + i + 1)</td>
+                                <td>@item.Timestamp.ToLocalTime().ToString("ddd dd MMM HH:mm:ss")</td>
+                                <td>@item.Value.ToString("0.##") @hp.Unit</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="button-row pager">
+                <button class="btn tiny" disabled="@(hp.Page == 0)" @onclick="() => LoadAsync(hp.Page - 1)">← Previous</button>
+                <span class="small muted">Page @(hp.Page + 1) of @PageCount(hp) · @hp.Total.ToString("N0") readings</span>
+                <button class="btn tiny" disabled="@(hp.Page + 1 >= PageCount(hp))" @onclick="() => LoadAsync(hp.Page + 1)">Next →</button>
+            </div>
+        }
+    }
+    else if (loading)
+    {
+        <p class="muted small">Querying the AVL tree…</p>
+    }
+    else
+    {
+        <p class="muted small">Pick a sensor, or click a sensor on the map, to see its timestamped history.</p>
+    }
+</section>
+
+@code {
+    private static readonly (string Key, string Label)[] Presets =
+    {
+        ("1h", "1 h"), ("2h", "2 h"), ("6h", "6 h"), ("24h", "24 h"), ("custom", "Custom (e.g. 14:00–16:00)")
+    };
+
+    private bool loading;
+    private string? error;
+    private string? loadedMac;
+
+    private MeshUiState Ui => State.MeshUi;
+
+    private IEnumerable<MeshNodeDto> Sensors =>
+        (State.Mesh?.Nodes ?? Array.Empty<MeshNodeDto>()).Where(n => n.Mac is not null).OrderBy(n => n.Name);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // The page sets HistoryMac when a sensor is clicked on the map.
+        if (Ui.HistoryMac is not null && Ui.HistoryMac != loadedMac)
+        {
+            await LoadAsync(0);
+        }
+    }
+
+    public async Task ShowAsync(string mac)
+    {
+        Ui.HistoryMac = mac;
+        StateHasChanged();
+        await LoadAsync(0);
+        StateHasChanged(); // called from the page, so re-render explicitly
+    }
+
+    private async Task SelectSensorAsync(ChangeEventArgs e)
+    {
+        Ui.HistoryMac = string.IsNullOrWhiteSpace(e.Value?.ToString()) ? null : e.Value!.ToString();
+        Ui.HistoryResult = null;
+        await LoadAsync(0);
+    }
+
+    private async Task SetPresetAsync(string key)
+    {
+        Ui.HistoryPreset = key;
+        if (key != "custom")
+        {
+            await LoadAsync(0);
+        }
+    }
+
+    private async Task ToggleOrderAsync()
+    {
+        Ui.HistoryDescending = !Ui.HistoryDescending;
+        await LoadAsync(0);
+    }
+
+    private async Task SetPageSizeAsync(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out int size))
+        {
+            Ui.HistoryPageSize = size;
+            await LoadAsync(0);
+        }
+    }
+
+    private async Task LoadAsync(int pageNumber)
+    {
+        if (Ui.HistoryMac is not string mac)
+        {
+            return;
+        }
+
+        if (!TryGetRange(out DateTimeOffset from, out DateTimeOffset to, out string? rangeError))
+        {
+            error = rangeError;
+            return;
+        }
+
+        loading = true;
+        error = null;
+        loadedMac = mac;
+        try
+        {
+            ApiResult<HistoryPageDto> result = await Api.GetDeviceHistoryAsync(mac, from, to, pageNumber, Ui.HistoryPageSize, Ui.HistoryDescending, 48);
+            if (result.Success && result.Value is not null)
+            {
+                Ui.HistoryResult = result.Value;
+                Ui.HistoryPage = pageNumber;
+            }
+            else
+            {
+                error = result.Error ?? "The history query failed.";
+            }
+        }
+        catch (Exception ex)
+        {
+            error = $"The history query failed: {ex.Message}";
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private bool TryGetRange(out DateTimeOffset from, out DateTimeOffset to, out string? message)
+    {
+        message = null;
+        to = DateTimeOffset.Now;
+        from = to;
+
+        switch (Ui.HistoryPreset)
+        {
+            case "1h": from = to.AddHours(-1); return true;
+            case "2h": from = to.AddHours(-2); return true;
+            case "6h": from = to.AddHours(-6); return true;
+            case "24h": from = to.AddHours(-24); return true;
+        }
+
+        TimeOnly start = Ui.HistoryFromTime;
+        TimeOnly end = Ui.HistoryToTime;
+
+        DateTime day = Ui.HistoryDate.Date;
+        DateTime localFrom = day.Add(start.ToTimeSpan());
+        DateTime localTo = day.Add(end.ToTimeSpan());
+        if (localTo <= localFrom)
+        {
+            localTo = localTo.AddDays(1); // e.g. 22:00 → 02:00 crosses midnight
+        }
+
+        from = new DateTimeOffset(localFrom, TimeZoneInfo.Local.GetUtcOffset(localFrom));
+        to = new DateTimeOffset(localTo, TimeZoneInfo.Local.GetUtcOffset(localTo));
+        return true;
+    }
+
+    private static int PageCount(HistoryPageDto page) => Math.Max(1, (int)Math.Ceiling(page.Total / (double)page.PageSize));
+
+    private static string Fmt(double? value) => value is double v ? v.ToString("0.##") : "–";
+}

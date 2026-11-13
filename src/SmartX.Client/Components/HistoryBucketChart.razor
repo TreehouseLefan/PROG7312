@@ -1,0 +1,62 @@
+@* Min–max band and mean line per time bucket; each bucket's numbers come from one O(log n) AVL aggregate query. *@
+
+<svg class="timeline-svg" viewBox="0 0 @F(W) @F(H)" role="img" aria-label="@($"{Page.Name} {Page.Metric}: min, mean and max per bucket")">
+    @for (int i = 0; i <= 4; i++)
+    {
+        double value = yMin + ((yMax - yMin) * i / 4);
+        double y = Y(value);
+        <g>
+            <line class="grid" x1="@F(Left)" x2="@F(W - Right)" y1="@F(y)" y2="@F(y)" />
+            <text class="axis" x="@F(Left - 6)" y="@F(y + 4)" text-anchor="end">@(value.ToString(Math.Abs(yMax - yMin) < 10 ? "0.0" : "0", CultureInfo.InvariantCulture))</text>
+        </g>
+    }
+
+    @for (int i = 0; i < Page.Buckets.Length; i++)
+    {
+        HistoryBucketDto bucket = Page.Buckets[i];
+        if (bucket.Min is double lo && bucket.Max is double hi)
+        {
+            double x = X(i);
+            double top = Y(hi);
+            double height = Math.Max(1.5, Y(lo) - top);
+            <rect class="bucket-bar" x="@F(x - BarWidth / 2)" y="@F(top)" width="@F(BarWidth)" height="@F(height)">
+                <title>@($"{bucket.From.ToLocalTime():HH:mm}–{bucket.To.ToLocalTime():HH:mm}: {bucket.Count} readings, min {lo:0.##}, mean {bucket.Mean:0.##}, max {hi:0.##} {Page.Unit}")</title>
+            </rect>
+        }
+    }
+
+    <polyline class="mean" points="@MeanLine()" />
+
+    <text class="axis" x="@F(Left)" y="@F(H - 4)">@Page.From.ToLocalTime().ToString("dd MMM HH:mm")</text>
+    <text class="axis" x="@F(W - Right)" y="@F(H - 4)" text-anchor="end">@Page.To.ToLocalTime().ToString("dd MMM HH:mm")</text>
+</svg>
+
+@code {
+    [Parameter, EditorRequired] public HistoryPageDto Page { get; set; } = default!;
+
+    private const double W = 640, H = 190, Left = 44, Right = 10, Top = 10, Bottom = 22;
+    private double yMin, yMax;
+
+    private double BarWidth => Math.Max(2, (W - Left - Right) / Math.Max(1, Page.Buckets.Length) * 0.7);
+
+    protected override void OnParametersSet()
+    {
+        double[] mins = Page.Buckets.Where(b => b.Min.HasValue).Select(b => b.Min!.Value).ToArray();
+        double[] maxs = Page.Buckets.Where(b => b.Max.HasValue).Select(b => b.Max!.Value).ToArray();
+        yMin = mins.Length > 0 ? mins.Min() : 0;
+        yMax = maxs.Length > 0 ? maxs.Max() : 1;
+        double pad = Math.Max((yMax - yMin) * 0.1, 0.5);
+        yMin -= pad;
+        yMax += pad;
+    }
+
+    private double X(int bucket) =>
+        Left + ((W - Left - Right) * (bucket + 0.5) / Math.Max(1, Page.Buckets.Length));
+
+    private double Y(double value) => Top + ((H - Top - Bottom) * (1 - ((value - yMin) / (yMax - yMin))));
+
+    private string MeanLine() => string.Join(' ',
+        Page.Buckets.Select((b, i) => (b, i)).Where(t => t.b.Mean.HasValue).Select(t => $"{F(X(t.i))},{F(Y(t.b.Mean!.Value))}"));
+
+    private static string F(double value) => value.ToString("0.##", CultureInfo.InvariantCulture);
+}
