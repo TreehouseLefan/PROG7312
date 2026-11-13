@@ -232,3 +232,38 @@ GET {{api}}/api/engine/rules?top=15
 
 ### Global history (SortedDictionary), newest first
 GET {{api}}/api/history?minutes=60
+
+# ======================= Part 3: mesh routing and AVL history =======================
+
+### Whole mesh: nodes, links, MST / shortest-path-tree flags, stats, self-healing log
+GET {{api}}/api/mesh
+
+### Trace one node's route by MAC (A-01 Soil Moisture)
+GET {{api}}/api/mesh/route/24:0A:C4:0A:00:00
+
+### BFS from the greenhouse gateway: which devices hang off it, which are down
+GET {{api}}/api/mesh/traverse?from=gw-a1&mode=bfs
+
+### DFS limited to Sub-Zone C
+GET {{api}}/api/mesh/traverse?from=gw-a2&mode=dfs&subZone=sz-c
+
+### Fail a gateway: Prim re-routes everything behind it
+POST {{api}}/api/mesh/nodes/gw-a1/fail
+
+### Restore it
+POST {{api}}/api/mesh/nodes/gw-a1/restore
+
+### Fail the Tower gateway (a single point of failure: Facility B becomes isolated)
+POST {{api}}/api/mesh/nodes/gw-b/fail
+
+### Reset every failure
+POST {{api}}/api/mesh/reset
+
+### Prim vs Kruskal vs Dijkstra at scale
+GET {{api}}/api/mesh/benchmark?nodes=5000
+
+### Last two hours of a sensor's history (AVL range query, newest first)
+GET {{api}}/api/devices/24:0A:C4:0A:00:00/history?pageSize=10
+
+### A fixed window, e.g. 14:00–16:00 SAST (change the date)
+GET {{api}}/api/devices/24:0A:C4:0A:00:00/history?from=2026-11-11T14:00:00%2B02:00&to=2026-11-11T16:00:00%2B02:00&order=asc&pageSize=25
