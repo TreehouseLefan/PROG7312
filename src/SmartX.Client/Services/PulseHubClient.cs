@@ -27,6 +27,7 @@ public sealed class PulseHubClient : IAsyncDisposable
     public event Action<CommandStateDto>? CommandsReceived;
     public event Action<EngineSnapshotDto>? EngineReceived;
     public event Action<HistoryEventDto[]>? HistoryReceived;
+    public event Action<MeshSnapshotDto>? MeshReceived;
     public event Action<HubConnectionState>? ConnectionChanged;
 
     public HubConnectionState State => _connection?.State ?? HubConnectionState.Disconnected;
@@ -51,6 +52,7 @@ public sealed class PulseHubClient : IAsyncDisposable
                 _connection.On<CommandStateDto>("commands", state => CommandsReceived?.Invoke(state));
                 _connection.On<EngineSnapshotDto>("engine", snapshot => EngineReceived?.Invoke(snapshot));
                 _connection.On<HistoryEventDto[]>("history", events => HistoryReceived?.Invoke(events));
+                _connection.On<MeshSnapshotDto>("mesh", snapshot => MeshReceived?.Invoke(snapshot));
 
                 _connection.Reconnecting += _ =>
                 {

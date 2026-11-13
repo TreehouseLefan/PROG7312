@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Components.Forms;
@@ -331,6 +332,60 @@ public sealed class SmartXApiClient
 
     public Task<LookupBenchmarkDto?> RunLookupBenchmarkAsync(int devices, int lookups) =>
         _http.GetFromJsonAsync<LookupBenchmarkDto>($"api/diagnostics/lookup?devices={devices}&lookups={lookups}");
+
+    // ---------- Part 3: mesh routing and AVL history ----------
+    public Task<MeshSnapshotDto?> GetMeshAsync() => _http.GetFromJsonAsync<MeshSnapshotDto>("api/mesh");
+
+    public async Task<ApiResult<RouteReportDto>> GetRouteAsync(string nodeOrMac)
+    {
+        using HttpResponseMessage response = await _http.GetAsync($"api/mesh/route/{Uri.EscapeDataString(nodeOrMac.Trim())}");
+        return await ApiResult<RouteReportDto>.FromResponseAsync(response);
+    }
+
+    public async Task<ApiResult<TraversalReportDto>> TraverseAsync(string from, string mode, string? subZone)
+    {
+        string url = $"api/mesh/traverse?from={Uri.EscapeDataString(from)}&mode={mode}";
+        if (!string.IsNullOrWhiteSpace(subZone))
+        {
+            url += "&subZone=" + Uri.EscapeDataString(subZone);
+        }
+
+        using HttpResponseMessage response = await _http.GetAsync(url);
+        return await ApiResult<TraversalReportDto>.FromResponseAsync(response);
+    }
+
+    public async Task<ApiResult<MeshSnapshotDto>> FailNodeAsync(string node)
+    {
+        using HttpResponseMessage response = await _http.PostAsync($"api/mesh/nodes/{Uri.EscapeDataString(node)}/fail", content: null);
+        return await ApiResult<MeshSnapshotDto>.FromResponseAsync(response);
+    }
+
+    public async Task<ApiResult<MeshSnapshotDto>> RestoreNodeAsync(string node)
+    {
+        using HttpResponseMessage response = await _http.PostAsync($"api/mesh/nodes/{Uri.EscapeDataString(node)}/restore", content: null);
+        return await ApiResult<MeshSnapshotDto>.FromResponseAsync(response);
+    }
+
+    public async Task<ApiResult<MeshSnapshotDto>> ResetMeshAsync()
+    {
+        using HttpResponseMessage response = await _http.PostAsync("api/mesh/reset", content: null);
+        return await ApiResult<MeshSnapshotDto>.FromResponseAsync(response);
+    }
+
+    public Task<MeshBenchmarkDto?> RunMeshBenchmarkAsync(int nodes) =>
+        _http.GetFromJsonAsync<MeshBenchmarkDto>($"api/mesh/benchmark?nodes={nodes}");
+
+    /// <summary>Times are sent as ISO 8601 with their offset, so the server reads them exactly.</summary>
+    public async Task<ApiResult<HistoryPageDto>> GetDeviceHistoryAsync(
+        string mac, DateTimeOffset from, DateTimeOffset to, int page, int pageSize, bool descending, int buckets)
+    {
+        string url = $"api/devices/{Mac(mac)}/history" +
+            $"?from={Uri.EscapeDataString(from.ToString("o", CultureInfo.InvariantCulture))}" +
+            $"&to={Uri.EscapeDataString(to.ToString("o", CultureInfo.InvariantCulture))}" +
+            $"&page={page}&pageSize={pageSize}&order={(descending ? "desc" : "asc")}&buckets={buckets}";
+        using HttpResponseMessage response = await _http.GetAsync(url);
+        return await ApiResult<HistoryPageDto>.FromResponseAsync(response);
+    }
 
     private async Task<ApiResult<SimulatorStatusDto>> PostSimulatorAsync(string url)
     {
