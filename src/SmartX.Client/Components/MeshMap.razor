@@ -1,0 +1,198 @@
+@* SVG map of the mesh. Radio links that are in the minimum spanning tree are drawn solid; the
+   shortest-path tree (Dijkstra) can be overlaid dashed; the selected route is highlighted. *@
+
+<svg class="mesh-svg" viewBox="0 0 380 172" role="img" aria-label="Mesh network map: @Snapshot.Stats.Up nodes up, @Snapshot.Stats.Down down, @Snapshot.Stats.Isolated isolated">
+    @foreach (MeshAreaDto area in Snapshot.Areas)
+    {
+        <g>
+            <rect class="mesh-area" x="@F(area.X)" y="@F(area.Y)" width="@F(area.Width)" height="@F(area.Height)" rx="6" />
+            <text class="mesh-area-label" x="@F(area.X + 4)" y="@F(area.Y + 8)">@area.Name</text>
+        </g>
+    }
+
+    @* All links first (faint), then the trees on top. *@
+    @foreach (MeshEdgeDto edge in Snapshot.Edges)
+    {
+        if (!positions.TryGetValue(edge.A, out var a) || !positions.TryGetValue(edge.B, out var b))
+        {
+            continue;
+        }
+
+        <line class="@EdgeClass(edge)" x1="@F(a.X)" y1="@F(a.Y)" x2="@F(b.X)" y2="@F(b.Y)">
+            <title>@(Name(edge.A)) ↔ @(Name(edge.B)): @edge.DistanceMetres.ToString("0.#") m, @edge.CostMicrojoules.ToString("0.#") µJ@(edge.InMst ? " · in MST" : "")</title>
+        </line>
+    }
+
+    @foreach (var hop in HighlightHops)
+    {
+        if (positions.TryGetValue(hop.From, out var a) && positions.TryGetValue(hop.To, out var b))
+        {
+            <line class="mesh-edge route" x1="@F(a.X)" y1="@F(a.Y)" x2="@F(b.X)" y2="@F(b.Y)" />
+        }
+    }
+
+    @foreach (var hop in AlternativeHops)
+    {
+        if (positions.TryGetValue(hop.From, out var a) && positions.TryGetValue(hop.To, out var b))
+        {
+            <line class="mesh-edge alternative" x1="@F(a.X)" y1="@F(a.Y)" x2="@F(b.X)" y2="@F(b.Y)" />
+        }
+    }
+
+    @foreach (MeshNodeDto node in Snapshot.Nodes)
+    {
+        string css = NodeClass(node);
+        <g class="mesh-node" @onclick="() => OnSelect.InvokeAsync(node.Id)" tabindex="0" role="button"
+           aria-label="@($"{node.Name}, {node.Status}")" @onkeydown="e => KeyAsync(e, node.Id)">
+            <title>@Tooltip(node)</title>
+            @if (node.Kind == MeshNodeKind.Server)
+            {
+                <g>
+                    <rect class="@css" x="@F(node.X - 9)" y="@F(node.Y - 5)" width="18" height="10" rx="2" />
+                    <text class="mesh-label strong" x="@F(node.X + 12)" y="@F(node.Y + 3)">@node.Name</text>
+                </g>
+            }
+            else if (node.Kind == MeshNodeKind.Gateway)
+            {
+                <g>
+                    <rect class="@css" x="@F(node.X - 5)" y="@F(node.Y - 5)" width="10" height="10" rx="2" />
+                    <text class="mesh-label strong" x="@F(node.X)" y="@F(node.Y - 8)" text-anchor="middle">@ShortName(node)</text>
+                </g>
+            }
+            else
+            {
+                <circle class="@css" cx="@F(node.X)" cy="@F(node.Y)" r="@(node.Kind == MeshNodeKind.Actuator ? "3.4" : "2.8")" />
+            }
+
+            @if (node.Status == MeshNodeStatus.Down)
+            {
+                <path class="mesh-cross" d="@($"M{F(node.X - 3)} {F(node.Y - 3)} L{F(node.X + 3)} {F(node.Y + 3)} M{F(node.X + 3)} {F(node.Y - 3)} L{F(node.X - 3)} {F(node.Y + 3)}")" />
+            }
+
+            @if (node.Critical && node.Status == MeshNodeStatus.Up && node.Kind != MeshNodeKind.Server)
+            {
+                <circle class="mesh-critical" cx="@F(node.X)" cy="@F(node.Y)" r="@(node.Kind == MeshNodeKind.Gateway ? "8.5" : "5")" />
+            }
+
+            @if (string.Equals(node.Id, SelectedId, StringComparison.OrdinalIgnoreCase))
+            {
+                <circle class="mesh-selected" cx="@F(node.X)" cy="@F(node.Y)" r="@(node.Kind == MeshNodeKind.Sensor || node.Kind == MeshNodeKind.Actuator ? "5.5" : "10")" />
+            }
+        </g>
+    }
+</svg>
+
+<div class="mesh-legend small muted">
+    <span><i class="lg lg-mst"></i>MST link (Prim)</span>
+    @if (ShowShortestTree)
+    {
+        <span><i class="lg lg-spt"></i>Shortest-path tree (Dijkstra)</span>
+    }
+    <span><i class="lg lg-route"></i>Selected route</span>
+    <span><i class="lg lg-alt"></i>Route if next hop fails</span>
+    <span><i class="lg-dot up"></i>Up</span>
+    <span><i class="lg-dot down"></i>Down</span>
+    <span><i class="lg-dot isolated"></i>Isolated</span>
+    <span><i class="lg-ring"></i>Critical (articulation point)</span>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public MeshSnapshotDto Snapshot { get; set; } = default!;
+    [Parameter] public string? SelectedId { get; set; }
+    [Parameter] public bool ShowShortestTree { get; set; }
+    [Parameter] public RouteDto? Route { get; set; }
+    [Parameter] public RouteDto? Alternative { get; set; }
+    [Parameter] public EventCallback<string> OnSelect { get; set; }
+
+    private Dictionary<string, (double X, double Y)> positions = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, MeshNodeDto> nodes = new(StringComparer.OrdinalIgnoreCase);
+    private long builtFor = -1;
+
+    private IEnumerable<(string From, string To)> HighlightHops => Hops(Route);
+
+    private IEnumerable<(string From, string To)> AlternativeHops => Hops(Alternative);
+
+    private static IEnumerable<(string From, string To)> Hops(RouteDto? route) =>
+        route is { Reachable: true } ? route.Hops.Select(h => (h.FromId, h.ToId)) : Enumerable.Empty<(string, string)>();
+
+    protected override void OnParametersSet()
+    {
+        if (Snapshot.Version == builtFor)
+        {
+            return;
+        }
+
+        builtFor = Snapshot.Version;
+        positions = Snapshot.Nodes.ToDictionary(n => n.Id, n => (n.X, n.Y), StringComparer.OrdinalIgnoreCase);
+        nodes = Snapshot.Nodes.ToDictionary(n => n.Id, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private string EdgeClass(MeshEdgeDto edge)
+    {
+        if (!edge.Live)
+        {
+            return "mesh-edge dead";
+        }
+
+        string css = edge.Kind == MeshLinkKind.Backhaul ? "mesh-edge backhaul" : "mesh-edge";
+        if (edge.InMst)
+        {
+            css += " mst";
+        }
+
+        if (ShowShortestTree && edge.InShortestTree)
+        {
+            css += " spt";
+        }
+
+        return css;
+    }
+
+    private static string NodeClass(MeshNodeDto node)
+    {
+        string kind = node.Kind.ToString().ToLowerInvariant();
+        string status = node.Status.ToString().ToLowerInvariant();
+        return $"mesh-dot {kind} {status}";
+    }
+
+    private string Name(string id) => nodes.TryGetValue(id, out MeshNodeDto? n) ? n.Name : id;
+
+    private static string ShortName(MeshNodeDto node)
+    {
+        int space = node.Name.IndexOf(' ');
+        return space > 0 ? node.Name[..space] : node.Name;
+    }
+
+    private static string Tooltip(MeshNodeDto node)
+    {
+        var text = new StringBuilder();
+        text.Append(node.Name).Append(" (").Append(node.Kind).Append(") · ").Append(node.Status);
+        if (node.Mac is not null)
+        {
+            text.Append("\nMAC ").Append(node.Mac);
+        }
+
+        if (node.MstHops is int hops && node.MstPathCost is double cost)
+        {
+            text.Append("\nMST: ").Append(hops).Append(" hop(s), ").Append(cost.ToString("0", CultureInfo.InvariantCulture)).Append(" µJ to the server");
+        }
+
+        if (node.Critical)
+        {
+            text.Append("\nCritical: removing it disconnects part of the mesh");
+        }
+
+        text.Append("\nClick to trace its route");
+        return text.ToString();
+    }
+
+    private async Task KeyAsync(KeyboardEventArgs e, string id)
+    {
+        if (e.Key is "Enter" or " ")
+        {
+            await OnSelect.InvokeAsync(id);
+        }
+    }
+
+    private static string F(double value) => value.ToString("0.##", CultureInfo.InvariantCulture);
+}
