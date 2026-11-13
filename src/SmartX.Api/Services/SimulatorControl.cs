@@ -41,6 +41,9 @@ public sealed class SimulatorControl
 
     public void Disconnect(string mac, TimeSpan duration, DateTimeOffset now) => _disconnects[mac] = now + duration;
 
+    /// <summary>Ends a disconnect early (used when a node failed on the Mesh page is restored).</summary>
+    public bool Reconnect(string mac) => _disconnects.TryRemove(mac, out _);
+
     public void QueueSpike(string mac, int readings) =>
         _pendingSpikes.AddOrUpdate(mac, readings, (_, existing) => Math.Max(existing, readings));
 
