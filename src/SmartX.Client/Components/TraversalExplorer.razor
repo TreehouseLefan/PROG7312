@@ -1,0 +1,153 @@
+@inherits LiveComponent
+@* BFS / DFS from a gateway (or the server): which devices hang off it, which are down, and where to hop instead. *@
+
+<section class="panel">
+    <div class="panel-head">
+        <h2>Subnet explorer (BFS / DFS)</h2>
+        @if (Ui.Traversal is TraversalReportDto t)
+        {
+            <span class="small muted">@t.EdgesExamined links examined · @t.ElapsedMicroseconds.ToString("0.#") µs</span>
+        }
+    </div>
+
+    <div class="filter-row">
+        <label class="field">
+            <span>Start at</span>
+            <select @bind="Ui.TraversalStart">
+                @foreach (MeshNodeDto node in Starts)
+                {
+                    <option value="@node.Id">@node.Name</option>
+                }
+            </select>
+        </label>
+        <label class="field">
+            <span>Scope</span>
+            <select @bind="Ui.TraversalScope">
+                <option value="">Whole facility / network</option>
+                @foreach (string subZone in SubZones)
+                {
+                    <option value="@subZone">Sub-Zone @subZone</option>
+                }
+            </select>
+        </label>
+        <div class="field">
+            <span>Algorithm</span>
+            <div class="segmented" role="group" aria-label="Traversal">
+                <button class="@(Ui.TraversalMode == "bfs" ? "seg active" : "seg")" @onclick='() => Ui.TraversalMode = "bfs"'>BFS</button>
+                <button class="@(Ui.TraversalMode == "dfs" ? "seg active" : "seg")" @onclick='() => Ui.TraversalMode = "dfs"'>DFS</button>
+            </div>
+        </div>
+        <div class="field"><span>&nbsp;</span><button class="btn primary" @onclick="RunAsync" disabled="@running">Run</button></div>
+    </div>
+
+    <p class="tiny-text muted">
+        BFS visits nodes in rings of hop distance, so the depth column is the fewest hops from the start. DFS dives along one
+        branch first, the order a recursive network walk or a cycle check would use. Down nodes are skipped, so anything
+        left unvisited in scope is cut off.
+    </p>
+
+    @if (error is not null)
+    {
+        <div class="alert error">@error</div>
+    }
+
+    @if (Ui.Traversal is TraversalReportDto report)
+    {
+        <p class="lead small">@report.Summary</p>
+
+        @if (report.DownInScope.Length > 0 || report.IsolatedInScope.Length > 0)
+        {
+            <div class="chips">
+                @foreach (MeshNodeDto node in report.DownInScope)
+                {
+                    <span class="chip mesh-chip down" title="@node.Mac">✕ @node.Name</span>
+                }
+                @foreach (MeshNodeDto node in report.IsolatedInScope)
+                {
+                    <span class="chip mesh-chip isolated" title="Alive but no live path from @report.StartName">⚠ @node.Name</span>
+                }
+            </div>
+        }
+
+        @if (report.HopAdvice.Length > 0)
+        {
+            <h3 class="sub-head">Where to hop now</h3>
+            <ul class="hop-advice small">
+                @foreach (HopAdviceDto advice in report.HopAdvice)
+                {
+                    <li>@advice.Advice</li>
+                }
+            </ul>
+        }
+
+        <div class="table-wrap traversal-table">
+            <table class="table compact">
+                <thead><tr><th>Step</th><th>Node</th><th>Sub-Zone</th><th>@(report.Mode == "BFS" ? "Hops" : "Depth")</th><th>Reached from</th></tr></thead>
+                <tbody>
+                    @foreach (TraversalStepDto step in report.Order)
+                    {
+                        <tr class="@(step.InScope ? null : "muted")">
+                            <td>@(step.Step + 1)</td>
+                            <td>@step.Name</td>
+                            <td>@step.SubZoneId</td>
+                            <td>@step.Depth</td>
+                            <td>@(step.ParentId is null ? "start" : NameOf(step.ParentId))</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+@code {
+    private bool running;
+    private string? error;
+
+    private MeshUiState Ui => State.MeshUi;
+
+    private IEnumerable<MeshNodeDto> Starts =>
+        (State.Mesh?.Nodes ?? Array.Empty<MeshNodeDto>())
+            .Where(n => n.Kind is MeshNodeKind.Server or MeshNodeKind.Gateway || n.Id == Ui.SelectedNodeId)
+            .OrderBy(n => n.Kind).ThenBy(n => n.Name);
+
+    private IEnumerable<string> SubZones =>
+        (State.Mesh?.Nodes ?? Array.Empty<MeshNodeDto>())
+            .Where(n => n.Mac is not null).Select(n => n.SubZoneId).Distinct(StringComparer.OrdinalIgnoreCase).Order();
+
+    private string NameOf(string id) =>
+        State.Mesh?.Nodes.FirstOrDefault(n => string.Equals(n.Id, id, StringComparison.OrdinalIgnoreCase))?.Name ?? id;
+
+    public async Task RunFromAsync(string startId)
+    {
+        Ui.TraversalStart = startId;
+        await RunAsync();
+        StateHasChanged(); // called from the page, so re-render explicitly
+    }
+
+    private async Task RunAsync()
+    {
+        running = true;
+        error = null;
+        try
+        {
+            ApiResult<TraversalReportDto> result = await Api.TraverseAsync(Ui.TraversalStart, Ui.TraversalMode, Ui.TraversalScope);
+            if (result.Success && result.Value is not null)
+            {
+                Ui.Traversal = result.Value;
+            }
+            else
+            {
+                error = result.Error ?? "The traversal failed.";
+            }
+        }
+        catch (Exception ex)
+        {
+            error = $"The traversal failed: {ex.Message}";
+        }
+        finally
+        {
+            running = false;
+        }
+    }
+}
