@@ -45,7 +45,13 @@
 
             <div class="nav-group" role="group" aria-label="Network Topology and Mesh Routing">
                 <span class="nav-group-label">Mesh</span>
-                <NavLink href="mesh" Match="NavLinkMatch.All" class="nav-soon" title="To be implemented in the final PoE">Mesh Routing 🔒</NavLink>
+                <NavLink href="mesh" Match="NavLinkMatch.All">
+                    Mesh Routing
+                    @if (State.MeshProblemCount > 0)
+                    {
+                        <span class="nav-badge crit" title="Mesh nodes down or isolated">@State.MeshProblemCount</span>
+                    }
+                </NavLink>
             </div>
         </nav>
 
