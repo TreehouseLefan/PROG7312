@@ -26,6 +26,7 @@ public sealed class PulseHub : Hub
     public const string CommandsMethod = "commands";
     public const string EngineMethod = "engine";
     public const string HistoryMethod = "history";
+    public const string MeshMethod = "mesh";
 
     public Task<string> Ping() => Task.FromResult("pong");
 }

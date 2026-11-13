@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.SignalR;
 using SmartX.Api.Hubs;
+using SmartX.Api.Mesh;
 using SmartX.Api.Services;
 using SmartX.Core.Contracts;
 using SmartX.Core.Pulse;
@@ -11,7 +12,7 @@ namespace SmartX.Api.Background;
 /// <list type="bullet">
 /// <item>Every 500 ms: newly processed packets and queue statistics.</item>
 /// <item>Every second: Pulse Grid changes, offline re-reports into the alert HashSets, and an engine refresh.</item>
-/// <item>Only when their version number changed: the alert board, command state, engine output and history.</item>
+/// <item>Only when their version number changed: the alert board, command state, engine output, history and the mesh routes.</item>
 /// <item>Immediately: each new alert, via the <see cref="AlertCenter.AlertRaised"/> event.</item>
 /// </list>
 /// </summary>
@@ -26,6 +27,7 @@ public sealed class RealtimeBroadcaster : BackgroundService
     private readonly ActionEngine _engine;
     private readonly TimelineService _timeline;
     private readonly DeviceRegistry _registry;
+    private readonly MeshService _mesh;
     private readonly IHubContext<PulseHub> _hub;
     private readonly TimeProvider _time;
     private readonly ILogger<RealtimeBroadcaster> _logger;
@@ -34,6 +36,7 @@ public sealed class RealtimeBroadcaster : BackgroundService
     private long _commandsVersion = -1;
     private long _engineVersion = -1;
     private long _historyVersion = -1;
+    private long _meshVersion = -1;
 
     public RealtimeBroadcaster(
         PulseMonitor pulse,
@@ -45,6 +48,7 @@ public sealed class RealtimeBroadcaster : BackgroundService
         ActionEngine engine,
         TimelineService timeline,
         DeviceRegistry registry,
+        MeshService mesh,
         IHubContext<PulseHub> hub,
         TimeProvider time,
         ILogger<RealtimeBroadcaster> logger)
@@ -58,6 +62,7 @@ public sealed class RealtimeBroadcaster : BackgroundService
         _engine = engine;
         _timeline = timeline;
         _registry = registry;
+        _mesh = mesh;
         _hub = hub;
         _time = time;
         _logger = logger;
@@ -89,6 +94,7 @@ public sealed class RealtimeBroadcaster : BackgroundService
                     {
                         await BroadcastPulseAsync(stoppingToken);
                         _engine.Refresh();
+                        _mesh.Refresh(); // Part 3: re-route around nodes that went offline
                     }
 
                     await BroadcastChangesAsync(stoppingToken);
@@ -169,6 +175,13 @@ public sealed class RealtimeBroadcaster : BackgroundService
             _historyVersion = history;
             DateTimeOffset now = _time.GetUtcNow();
             await _hub.Clients.All.SendAsync(PulseHub.HistoryMethod, _timeline.History(now.AddHours(-24), now.AddMinutes(1), null, 60), cancellationToken);
+        }
+
+        long mesh = _mesh.Version;
+        if (mesh != _meshVersion)
+        {
+            _meshVersion = mesh;
+            await _hub.Clients.All.SendAsync(PulseHub.MeshMethod, _mesh.Snapshot(), cancellationToken);
         }
     }
 
