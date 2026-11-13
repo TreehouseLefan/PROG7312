@@ -12,7 +12,7 @@ public class AvlTreeTests
         var tree = new AvlTree<int, double>(v => v);
         for (int i = 0; i < count; i++)
         {
-            tree.Insert(i, i); // sorted input way  the worst case forplain BST
+            tree.Insert(i, i); // sorted input: the worst case for a plain BST
         }
 
         return tree;
@@ -25,7 +25,7 @@ public class AvlTreeTests
 
         Assert.Equal(10_000, tree.Count);
         Assert.True(tree.Height <= AvlTree<int, double>.MaxHeightFor(tree.Count));
-        Assert.True(tree.Height <= 20); // log2(10 000) 13.3 a plain BST would be 10 000 deep
+        Assert.True(tree.Height <= 20); // log2(10 000) ~ 13.3; a plain BST would be 10 000 deep
         Assert.True(tree.Rotations > 0);
         Assert.True(tree.Validate());
     }
@@ -38,7 +38,7 @@ public class AvlTreeTests
         List<KeyValuePair<int, double>> range = tree.Range(100, 199, out int visited);
 
         Assert.Equal(Enumerable.Range(100, 100), range.Select(p => p.Key));
-        Assert.True(visited < 1_000 / 2); 
+        Assert.True(visited < 1_000 / 2); // O(log n + k), not a scan
     }
 
     [Fact]
@@ -46,25 +46,23 @@ public class AvlTreeTests
     {
         var random = new Random(7);
         var tree = new AvlTree<int, double>(v => v);
-        var list = new List<(int Key, double Value)>();
+        var reference = new Dictionary<int, double>();
         for (int i = 0; i < 2_000; i++)
         {
             int key = random.Next(0, 100_000);
             double value = Math.Round(random.NextDouble() * 100, 2);
-            if (tree.Insert(key, value))
-            {
-                list.Add((key, value));
-            }
+            tree.Insert(key, value);   // a repeated key replaces its value...
+            reference[key] = value;    // ...so the reference does the same
         }
 
-        var expected = list.Where(p => p.Key >= 20_000 && p.Key <= 60_000).Select(p => p.Value).ToList();
+        var expected = reference.Where(p => p.Key >= 20_000 && p.Key <= 60_000).Select(p => p.Value).ToList();
         RangeAggregate actual = tree.Aggregate(20_000, 60_000, out int visited);
 
         Assert.Equal(expected.Count, actual.Count);
         Assert.Equal(expected.Sum(), actual.Sum, 6);
         Assert.Equal(expected.Min(), actual.Min);
         Assert.Equal(expected.Max(), actual.Max);
-        Assert.True(visited < 100); // O(log n): two root to the leaf paths
+        Assert.True(visited < 100); // O(log n): two root-to-leaf paths
     }
 
     [Fact]
@@ -105,7 +103,7 @@ public class AvlTreeTests
         Assert.True(tree.TryRemoveMin(out int min, out _));
         Assert.Equal(1, min);
         Assert.True(tree.Validate());
-        Assert.Equal(666, tree.Count);
+        Assert.Equal(665, tree.Count); // 1 000 - 334 multiples of 3 (0..999) - 1 minimum
         Assert.Equal(tree.InOrder().Select(p => p.Key).Order(), tree.InOrder().Select(p => p.Key));
     }
 
@@ -116,7 +114,7 @@ public class AvlTreeTests
         long ticks = T0.UtcTicks;
 
         tree.Insert(new TimelineKey(ticks, 1), 10);
-        tree.Insert(new TimelineKey(ticks, 2), 20); 
+        tree.Insert(new TimelineKey(ticks, 2), 20); // same instant, different sequence
 
         var all = tree.Range(new TimelineKey(ticks, long.MinValue), new TimelineKey(ticks, long.MaxValue), out _);
         Assert.Equal(2, all.Count);
@@ -125,7 +123,7 @@ public class AvlTreeTests
     [Fact]
     public void Two_hour_window_query_returns_only_that_window()
     {
-        // One moisture reading per minute for a day.
+        // One moisture reading per minute for a day; query 14:00-16:00 like the brief's example.
         var tree = new AvlTree<TimelineKey, double>(v => v);
         for (int minute = 0; minute < 24 * 60; minute++)
         {
@@ -136,7 +134,7 @@ public class AvlTreeTests
         var to = new TimelineKey(T0.AddHours(16).UtcTicks, long.MaxValue);
         RangeAggregate window = tree.Aggregate(from, to, out _);
 
-        Assert.Equal(121, window.Count); 
+        Assert.Equal(121, window.Count); // 14:00 to 16:00 inclusive
         Assert.Equal(14 * 60, window.Min);
         Assert.Equal(16 * 60, window.Max);
     }
