@@ -24,6 +24,29 @@ public sealed class CommandStreamUiState
     public BurstReportDto? LastBurst { get; set; }
 }
 
+/// <summary>Selections on the Mesh Routing page, kept while the user visits other modules.</summary>
+public sealed class MeshUiState
+{
+    public string? SelectedNodeId { get; set; }
+    public string RouteQuery { get; set; } = string.Empty;
+    public RouteReportDto? Route { get; set; }
+    public bool ShowShortestTree { get; set; }
+    public string TraversalStart { get; set; } = "gw-a1";
+    public string TraversalMode { get; set; } = "bfs";
+    public string TraversalScope { get; set; } = string.Empty;
+    public TraversalReportDto? Traversal { get; set; }
+    public string? HistoryMac { get; set; }
+    public string HistoryPreset { get; set; } = "2h";
+    public DateTime HistoryDate { get; set; } = DateTime.Today;
+    public string HistoryFromTime { get; set; } = "14:00";
+    public string HistoryToTime { get; set; } = "16:00";
+    public bool HistoryDescending { get; set; } = true;
+    public int HistoryPage { get; set; }
+    public int HistoryPageSize { get; set; } = 25;
+    public HistoryPageDto? HistoryResult { get; set; }
+    public MeshBenchmarkDto? Benchmark { get; set; }
+}
+
 /// <summary>
 /// Application-wide state store (Blazor WebAssembly runs in one browser thread, so a singleton is safe).
 /// <para>It owns the one SignalR connection and keeps every module's live data up to date in the
@@ -79,6 +102,13 @@ public sealed class AppState : IDisposable
     public HistoryEventDto[] History { get; private set; } = Array.Empty<HistoryEventDto>();
     public List<AlertDto> Toasts { get; } = new();
 
+    // ---------- Part 3: Mesh Routing ----------
+    public MeshUiState MeshUi { get; } = new();
+    public MeshSnapshotDto? Mesh { get; private set; }
+
+    /// <summary>Nodes that are down or cut off from the server (shown as a badge on the menu).</summary>
+    public int MeshProblemCount => Mesh is null ? 0 : Mesh.Stats.Down + Mesh.Stats.Isolated;
+
     public int CriticalAlertCount => Alerts?.Active.Count(a => a.Severity == AlertSeverity.Critical) ?? 0;
 
     public int ActiveAlertCount => Alerts?.Active.Length ?? 0;
@@ -107,6 +137,7 @@ public sealed class AppState : IDisposable
             _hub.CommandsReceived += OnCommands;
             _hub.EngineReceived += OnEngine;
             _hub.HistoryReceived += OnHistory;
+            _hub.MeshReceived += OnMesh;
             _hub.ConnectionChanged += OnConnectionChanged;
             _started = true;
 
@@ -143,8 +174,9 @@ public sealed class AppState : IDisposable
             Task<HistoryEventDto[]?> history = _api.GetHistoryAsync(24 * 60, null, 60);
             Task<QueueStatsDto?> queue = _api.GetQueueStatsAsync();
             Task<StreamPacketDto[]?> recent = _api.GetRecentPacketsAsync(FeedCapacity);
+            Task<MeshSnapshotDto?> mesh = _api.GetMeshAsync();
 
-            await Task.WhenAll(pulse, alerts, commands, shadows, engine, history, queue, recent);
+            await Task.WhenAll(pulse, alerts, commands, shadows, engine, history, queue, recent, mesh);
 
             if (pulse.Result is PulseSnapshotDto snapshot)
             {
@@ -166,6 +198,7 @@ public sealed class AppState : IDisposable
             ApplyShadows(shadows.Result);
             Engine = engine.Result ?? Engine;
             History = history.Result ?? History;
+            Mesh = mesh.Result ?? Mesh;
             Queue = queue.Result ?? Queue;
 
             if (recent.Result is StreamPacketDto[] packets && Feed.Count == 0)
@@ -303,6 +336,18 @@ public sealed class AppState : IDisposable
         NotifyChanged();
     }
 
+    /// <summary>Applies a mesh snapshot pushed by the hub or returned by a fail / restore call.</summary>
+    public void ApplyMesh(MeshSnapshotDto snapshot)
+    {
+        if (Mesh is null || snapshot.Version >= Mesh.Version)
+        {
+            Mesh = snapshot;
+            NotifyChanged();
+        }
+    }
+
+    private void OnMesh(MeshSnapshotDto snapshot) => ApplyMesh(snapshot);
+
     private void OnHistory(HistoryEventDto[] events)
     {
         History = events;
@@ -360,6 +405,7 @@ public sealed class AppState : IDisposable
         _hub.CommandsReceived -= OnCommands;
         _hub.EngineReceived -= OnEngine;
         _hub.HistoryReceived -= OnHistory;
+        _hub.MeshReceived -= OnMesh;
         _hub.ConnectionChanged -= OnConnectionChanged;
     }
 }
