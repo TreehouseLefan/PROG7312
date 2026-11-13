@@ -44,6 +44,9 @@ public static class StreamEndpoints
                 wantedState = parsed;
             }
 
+            // Relevance: words found in the device's own name rank above words that only matched its
+            // location (e.g. "a" also matches every device in "Facility A").
+            string[] words = DeviceRegistry.Tokenize(query).ToArray();
             var results = new List<DeviceSearchResultDto>();
             foreach (SensorDevice device in matches)
             {
@@ -61,7 +64,9 @@ public static class StreamEndpoints
                     continue;
                 }
 
-                double score = active.Length * 10 + (tileState is PulseState.Offline or PulseState.Spike ? 5 : 0);
+                double score = (NameMatches(words, device.DisplayName) * 100)
+                               + (active.Length * 10)
+                               + (tileState is PulseState.Offline or PulseState.Spike ? 5 : 0);
                 results.Add(new DeviceSearchResultDto(
                     device.ToDto(0),
                     tileState,
@@ -163,52 +168,74 @@ public static class StreamEndpoints
                 TimelineService timeline,
                 AlertCenter alerts,
                 TimeProvider time) =>
+        {
+            if (!registry.TryGet(mac, out SensorDevice? device))
             {
-                if (!registry.TryGet(mac, out SensorDevice? device))
-                {
-                    return Results.NotFound(new { error = $"Device {mac} is not registered." });
-                }
+                return Results.NotFound(new { error = $"Device {mac} is not registered." });
+            }
 
-                DateTimeOffset to = time.GetUtcNow();
-                DateTimeOffset from = to.AddMinutes(-Math.Clamp(minutes ?? 15, 1, 24 * 60));
-                int points = Math.Clamp(maxPoints ?? 240, 20, 2_000);
+            DateTimeOffset to = time.GetUtcNow();
+            DateTimeOffset from = to.AddMinutes(-Math.Clamp(minutes ?? 15, 1, 24 * 60));
+            int points = Math.Clamp(maxPoints ?? 240, 20, 2_000);
 
-                var stopwatch = Stopwatch.StartNew();
-                timeline.TryGet(device.Key, out TimelineStore<double>? store);
-                List<(DateTimeOffset Timestamp, double Value)> raw = store?.Range(from, to) ?? new List<(DateTimeOffset, double)>();
-                List<TimelineBucket> buckets = TimelineDownsampler.Downsample(raw, from, to, points);
-                stopwatch.Stop();
+            var stopwatch = Stopwatch.StartNew();
+            timeline.TryGet(device.Key, out TimelineStore<double>? store);
+            List<(DateTimeOffset Timestamp, double Value)> raw = store?.Range(from, to) ?? new List<(DateTimeOffset, double)>();
+            List<TimelineBucket> buckets = TimelineDownsampler.Downsample(raw, from, to, points);
+            stopwatch.Stop();
 
-                double? low = device.Metric == "soil_moisture" ? alerts.Options.MoistureCriticalBelow : null;
-                double? high = device.Metric == "power_draw" ? alerts.Options.PowerCriticalAbove : null;
+            double? low = device.Metric == "soil_moisture" ? alerts.Options.MoistureCriticalBelow : null;
+            double? high = device.Metric == "power_draw" ? alerts.Options.PowerCriticalAbove : null;
 
-                return Results.Ok(new TimelineDto(
-                    device.MacAddress,
-                    device.DisplayName,
-                    device.Metric,
-                    device.Unit,
-                    from,
-                    to,
-                    store?.Count ?? 0,
-                    buckets.Count,
-                    Math.Round(stopwatch.Elapsed.TotalMilliseconds * 1000, 1),
-                    buckets.Select(b => new TimelinePointDto(b.Timestamp, Math.Round(b.Mean, 3), Math.Round(b.Min, 3), Math.Round(b.Max, 3), b.Count)).ToArray(),
-                    low,
-                    high));
-            })
+            return Results.Ok(new TimelineDto(
+                device.MacAddress,
+                device.DisplayName,
+                device.Metric,
+                device.Unit,
+                from,
+                to,
+                store?.Count ?? 0,
+                buckets.Count,
+                Math.Round(stopwatch.Elapsed.TotalMilliseconds * 1000, 1),
+                buckets.Select(b => new TimelinePointDto(b.Timestamp, Math.Round(b.Mean, 3), Math.Round(b.Min, 3), Math.Round(b.Max, 3), b.Count)).ToArray(),
+                low,
+                high));
+        })
             .WithTags("Command Stream");
 
         app.MapGet("/api/history", (int? minutes, HistoryKind? kind, int? max, TimelineService timeline, TimeProvider time) =>
-            {
-                DateTimeOffset now = time.GetUtcNow();
-                return Results.Ok(timeline.History(
-                    now.AddMinutes(-Math.Clamp(minutes ?? 120, 1, 7 * 24 * 60)),
-                    now.AddMinutes(1),
-                    kind,
-                    Math.Clamp(max ?? 100, 1, 500)));
-            })
+        {
+            DateTimeOffset now = time.GetUtcNow();
+            return Results.Ok(timeline.History(
+                now.AddMinutes(-Math.Clamp(minutes ?? 120, 1, 7 * 24 * 60)),
+                now.AddMinutes(1),
+                kind,
+                Math.Clamp(max ?? 100, 1, 500)));
+        })
             .WithTags("Command Stream");
 
         return app;
+    }
+
+    /// <summary>How many query words match a word of the device's own name (exact, or prefix for 2+ characters).</summary>
+    private static int NameMatches(string[] words, string displayName)
+    {
+        if (words.Length == 0)
+        {
+            return 0;
+        }
+
+        var nameTokens = new HashSet<string>(DeviceRegistry.Tokenize(displayName), StringComparer.Ordinal);
+        int matches = 0;
+        foreach (string word in words)
+        {
+            if (nameTokens.Contains(word) ||
+                (word.Length >= 2 && nameTokens.Any(token => token.StartsWith(word, StringComparison.Ordinal))))
+            {
+                matches++;
+            }
+        }
+
+        return matches;
     }
 }
