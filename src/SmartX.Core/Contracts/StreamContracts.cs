@@ -123,7 +123,8 @@ public enum HistoryKind
     Alert,
     AlertCleared,
     Search,
-    Suggestion
+    Suggestion,
+    Mesh
 }
 
 public sealed record HistoryEventDto(DateTimeOffset At, HistoryKind Kind, string Title, string Detail, string? Mac);
