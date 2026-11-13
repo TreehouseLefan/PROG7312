@@ -33,6 +33,7 @@ public sealed class TelemetryIngestionService
     private readonly AlertCenter _alerts;
     private readonly TimelineService _timeline;
     private readonly CommandService _commands;
+    private readonly TelemetryHistoryService _history;
     private readonly TimeProvider _time;
     private readonly object _rejectionGate = new();
     private readonly Dictionary<MacKey, Queue<DateTimeOffset>> _rejections = new();
@@ -53,8 +54,10 @@ public sealed class TelemetryIngestionService
         AlertCenter alerts,
         TimelineService timeline,
         CommandService commands,
+        TelemetryHistoryService history,
         TimeProvider time)
     {
+        _history = history;
         _registry = registry;
         _store = store;
         _pulse = pulse;
@@ -88,34 +91,34 @@ public sealed class TelemetryIngestionService
         switch (kind)
         {
             case TelemetryValueKind.Float:
-            {
-                if (!TryParseFloat(request.Value, out float value))
                 {
-                    return Reject<TelemetryIngestResult>("value", "Expected a finite number for a float payload.");
-                }
+                    if (!TryParseFloat(request.Value, out float value))
+                    {
+                        return Reject<TelemetryIngestResult>("value", "Expected a finite number for a float payload.");
+                    }
 
-                return IngestValue(request.DeviceMac, value, request.Timestamp);
-            }
+                    return IngestValue(request.DeviceMac, value, request.Timestamp);
+                }
 
             case TelemetryValueKind.Int:
-            {
-                if (!TryParseInt(request.Value, out int value))
                 {
-                    return Reject<TelemetryIngestResult>("value", "Expected a whole number for an int payload.");
-                }
+                    if (!TryParseInt(request.Value, out int value))
+                    {
+                        return Reject<TelemetryIngestResult>("value", "Expected a whole number for an int payload.");
+                    }
 
-                return IngestValue(request.DeviceMac, value, request.Timestamp);
-            }
+                    return IngestValue(request.DeviceMac, value, request.Timestamp);
+                }
 
             default:
-            {
-                if (!TryParseBool(request.Value, out bool value))
                 {
-                    return Reject<TelemetryIngestResult>("value", "Expected true or false for a bool payload.");
-                }
+                    if (!TryParseBool(request.Value, out bool value))
+                    {
+                        return Reject<TelemetryIngestResult>("value", "Expected true or false for a bool payload.");
+                    }
 
-                return IngestValue(request.DeviceMac, value, request.Timestamp);
-            }
+                    return IngestValue(request.DeviceMac, value, request.Timestamp);
+                }
         }
     }
 
@@ -201,6 +204,7 @@ public sealed class TelemetryIngestionService
         _store.Append(packet);
         _pulse.OnReading(device, value, timestamp);
         _timeline.Record(device.Key, timestamp, value);
+        _history.Record(device.Key, timestamp, value); // Part 3: AVL-tree history for range queries
 
         if (device.IsActuator)
         {
@@ -431,6 +435,7 @@ public sealed class TelemetryIngestionService
             // Only the newest reading is evaluated against "now"; older ones just build the baseline.
             _pulse.OnReading(device, accepted[i].NumericValue, accepted[i].Timestamp, evaluate: i == accepted.Count - 1);
             _timeline.Record(device.Key, accepted[i].Timestamp, accepted[i].NumericValue);
+            _history.Record(device.Key, accepted[i].Timestamp, accepted[i].NumericValue);
         }
 
         stopwatch.Stop();
