@@ -4,7 +4,7 @@ namespace SmartX.Core.Tests;
 
 public class MeshAlgorithmTests
 {
-    
+    /// <summary>The undirected graph of Cormen et al. (2022), Figure 21.1: its MST weighs 37.</summary>
     private static MeshGraph Clrs()
     {
         var graph = new MeshGraph();
@@ -36,7 +36,7 @@ public class MeshAlgorithmTests
 
         Assert.Equal(37, prim.TotalCost);
         Assert.Equal(37, kruskal.TotalCost);
-        Assert.Equal(8, prim.TreeEdges.Count); 
+        Assert.Equal(8, prim.TreeEdges.Count); // V - 1
         Assert.Equal(1, kruskal.Components);
     }
 
@@ -76,8 +76,8 @@ public class MeshAlgorithmTests
         Assert.Equal(0, bfs.Depth[graph.IndexOf("a")]);
         Assert.Equal(1, bfs.Depth[graph.IndexOf("h")]);
         Assert.Equal(2, bfs.Depth[graph.IndexOf("g")]);
-        Assert.Equal(3, bfs.Depth[graph.IndexOf("d")]); // a → b → c → d
-        Assert.Equal(4, bfs.Depth[graph.IndexOf("e")]); 
+        Assert.Equal(3, bfs.Depth[graph.IndexOf("d")]); // a -> b -> c -> d
+        Assert.Equal(4, bfs.Depth[graph.IndexOf("e")]); // e is two links beyond c or g
     }
 
     [Fact]
@@ -111,7 +111,7 @@ public class MeshAlgorithmTests
     [Fact]
     public void Articulation_points_are_the_single_points_of_failure()
     {
-        // Line a – b – c plus a triangle c – d – e are b and c are cut vertices.
+        // Line a - b - c plus a triangle c - d - e: b and c are cut vertices.
         var graph = new MeshGraph();
         foreach (string id in new[] { "a", "b", "c", "d", "e" })
         {
@@ -151,7 +151,7 @@ public class MeshAlgorithmTests
         double near = model.LinkCostMicrojoules(10);
         double far = model.LinkCostMicrojoules(40);
 
-        
+        // 1024 bits: Tx = 51.2 uJ + 0.1024 uJ per m^2 of distance squared, Rx = 51.2 uJ -> 10 m = 112.64 uJ, 40 m = 266.24 uJ.
         Assert.Equal(112.64, near, 6);
         Assert.Equal(266.24, far, 6);
     }
@@ -162,6 +162,6 @@ public class MeshAlgorithmTests
         var result = MeshBenchmark.Run(800, seed: 11);
 
         Assert.True(result.CostsAgree);
-        Assert.Equal(800, result.Vertices);
+        Assert.Equal(801, result.Vertices); // 800 nodes + the central server
     }
 }
