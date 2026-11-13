@@ -38,8 +38,8 @@ public sealed class MeshUiState
     public string? HistoryMac { get; set; }
     public string HistoryPreset { get; set; } = "2h";
     public DateTime HistoryDate { get; set; } = DateTime.Today;
-    public string HistoryFromTime { get; set; } = "14:00";
-    public string HistoryToTime { get; set; } = "16:00";
+    public TimeOnly HistoryFromTime { get; set; } = new(14, 0);
+    public TimeOnly HistoryToTime { get; set; } = new(16, 0);
     public bool HistoryDescending { get; set; } = true;
     public int HistoryPage { get; set; }
     public int HistoryPageSize { get; set; } = 25;
