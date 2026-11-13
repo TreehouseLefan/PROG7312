@@ -2,12 +2,13 @@ using System.Globalization;
 using SmartX.Api.Background;
 using SmartX.Api.Endpoints;
 using SmartX.Api.Hubs;
+using SmartX.Api.Mesh;
 using SmartX.Api.Seeding;
 using SmartX.Api.Services;
 using SmartX.Api.Simulation;
 using SmartX.Core.Pulse;
 
-// Messages contain numbers; keep "." as the decimal
+// Messages contain numbers; keep "." as the decimal separator whatever the Windows region settings are.
 CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
 CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.InvariantCulture;
 
@@ -27,7 +28,7 @@ builder.Services.AddCors(options =>
         .WithOrigins(allowedOrigins)
         .AllowAnyHeader()
         .AllowAnyMethod()
-        .AllowCredentials())); // SignalR N pulls connections
+        .AllowCredentials())); // SignalR needs credentials for cross-origin connections
 
 // ---------- Options ----------
 builder.Services.AddSingleton(TimeProvider.System);
@@ -47,14 +48,19 @@ builder.Services.AddSingleton<MeterAnalyticsService>();
 builder.Services.AddSingleton<SimulatorControl>();
 
 // ---------- Part 2 services ----------
-  builder.Services.AddSingleton<AlertCenter>();           // HashSet unique alerts / disconnected nodes
-  builder.Services.AddSingleton<CommandService>();        // device shadows + Stack<T> undo / redo
+builder.Services.AddSingleton<TimelineService>();       // SortedDictionary timelines + history
+builder.Services.AddSingleton<AlertCenter>();           // HashSet unique alerts / disconnected nodes
+builder.Services.AddSingleton<CommandService>();        // device shadows + Stack<T> undo / redo
 builder.Services.AddSingleton<IngestPipeline>();        // Queue<T> + PriorityQueue lanes
- builder.Services.AddSingleton<ActionEngine>();          // predictive suggestions and insights
+builder.Services.AddSingleton<TelemetryHistoryService>(); // Part 3: per-device AVL history
+builder.Services.AddSingleton<TelemetryIngestionService>();
+builder.Services.AddSingleton<ActionEngine>();          // predictive suggestions and insights
 builder.Services.AddSingleton<SimWorld>();
+builder.Services.AddSingleton<MeshService>();            // Part 3: graph, BFS/DFS, Prim/Kruskal, self-healing
 
 builder.Services.AddHostedService<TelemetryDispatcher>();
- builder.Services.AddHostedService<TelemetrySimulator>();
+builder.Services.AddHostedService<RealtimeBroadcaster>();
+builder.Services.AddHostedService<TelemetrySimulator>();
 
 var app = builder.Build();
 
@@ -76,12 +82,14 @@ app.MapStreamEndpoints();
 app.MapCommandEndpoints();
 app.MapAlertEndpoints();
 app.MapEngineEndpoints();
+app.MapMeshEndpoints();
 app.MapHub<PulseHub>(PulseHub.Route);
 
-  // Create the engine first so it is subscribed to alerts and commands before anything happens,
+// Create the engine first so it is subscribed to alerts and commands before anything happens,
 // then seed the topology, devices, historical telemetry and a week of operator history.
 app.Services.GetRequiredService<ActionEngine>();
-    DataSeeder.Seed(app.Services);
+DataSeeder.Seed(app.Services);
 EngineSeeder.Seed(app.Services);
+HistorySeeder.Seed(app.Services);
 
 app.Run();
